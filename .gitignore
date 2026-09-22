@@ -1,0 +1,15 @@
+# Secret -- JANGAN PERNAH di-commit
+.env
+**/.env
+
+# Python
+backend/venv/
+__pycache__/
+*.pyc
+
+# Konfigurasi Claude Code lokal -- bukan bagian dari kode proyek
+.claude/
+
+# Output build
+mobile/build/
+*.apk

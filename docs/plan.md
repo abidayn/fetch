@@ -388,25 +388,232 @@ Setelah dicek, itu tidak bisa dipenuhi dengan gratis dan sederhana:
 | Fly.io | Ada (`syd`) | Tidak ada free tier untuk akun baru |
 | Railway | Tidak ada Sydney | Hanya kredit trial |
 
-**Dipilih: Render, region Singapore, lewat Docker.** Jarak Singapore↔Sydney
-± 90–100 ms per query → satu request ± 4 query ≈ 0,4 detik ke DB. Masih jauh
-lebih cepat dari laptop↔Sydney (± 343 ms/query) yang sudah kita pakai selama
-ini. Kalau nanti terasa lambat, opsi lanjutan: pindahkan project Supabase ke
-Singapore (`ap-southeast-1`) — bukan bagian fase ini.
+**Dipilih: Render, region Singapore, lewat Docker.**
 
-**Fakta repo yang membentuk task di bawah** (dicek 2026-09-21):
+**Amandemen (2026-09-22) — DB juga dipindah ke Singapore, sebelum deploy.**
+Catatan di atas awalnya menerima ± 90–100 ms/query Render(Singapore)↔DB(Sydney)
+sebagai "cukup baik". Setelah dianalisis ulang, itu ongkos yang salah untuk
+diterima secara permanen: latensi itu bukan cuma soal `/search` (yang memang
+didominasi panggilan Gemini 0,5–20 detik, jadi 90 ms tidak terasa) — ia juga
+kena ke **setiap** `POST /items` (simpan awal), `GET /items`, `DELETE`, dan
+login, yaitu operasi yang murni DB tanpa AI dan terjadi berkali-kali di setiap
+sesi. Menerimanya berarti membayar pajak itu selamanya di setiap ketukan.
+
+Karena project Supabase sekarang cuma berisi data uji (~25–30 baris, akun
+`rag-test` + beberapa item manual — tidak ada user asli), biaya pindah hari
+ini nyaris nol. Menunda pindah sampai ada data user sungguhan akan jauh lebih
+berisiko. Maka: **buat project Supabase baru di `ap-southeast-1` (Singapore),
+migrasi data, lalu deploy ke Render langsung dengan `DATABASE_URL` Singapore**
+— supaya tidak perlu deploy dua kali. Task-nya di §5.0 di bawah, **sebelum**
+§5.1, karena tidak bergantung pada git dan environment variable Render (§5.3)
+butuh nilai `DATABASE_URL` yang sudah final.
+
+Efek samping yang perlu diketahui, di luar soal region: project Supabase
+gratis **otomatis pause setelah 1 minggu tidak dipakai** (beda dari, dan di
+luar, soal tidurnya Render setelah 15 menit idle). Kalau app tidak disentuh
+seminggu, siap-siap ada dua lapis "bangun tidur", bukan cuma satu.
+
+**Fakta repo yang membentuk task di bawah** (dicek 2026-09-21, diperbarui 2026-09-22):
 - Python lokal **3.14** → Dockerfile memakai image `python:3.14-slim` supaya
   versinya sama persis dengan yang sudah teruji.
-- `DATABASE_URL` sudah memakai **Supavisor session pooler**
-  (`aws-0-ap-southeast-2.pooler.supabase.com:5432`). Ini penting: koneksi
-  *direct* Supabase (`db.<ref>.supabase.co`) hanya IPv6, dan Render tidak
-  mendukung IPv6 keluar. Jangan ganti ke direct connection.
-- Folder `FETCH/` **belum** jadi git repo; Render men-deploy dari GitHub.
-- Dev dan production memakai **database Supabase yang sama** (tidak ada DB
-  production terpisah). Konsekuensi: akun & item uji ikut terlihat di
-  production, dan migrasi sudah otomatis ter-apply.
+- `DATABASE_URL` memakai **Supavisor session pooler**, bukan koneksi direct.
+  Ini penting: koneksi *direct* Supabase (`db.<ref>.supabase.co`) hanya IPv6,
+  dan Render tidak mendukung IPv6 keluar. Project baru di Singapore juga wajib
+  pakai pooler (host-nya akan berubah dari `aws-0-ap-southeast-2...` jadi
+  `aws-0-ap-southeast-1...` — dengan **-1** bukan **-2**, gampang tersalah-baca).
+- Folder `FETCH/` sudah jadi git repo dan sudah di-push ke GitHub (lihat §5.1).
+- Dev dan production akan tetap memakai **satu database Supabase yang sama**
+  (yang baru, Singapore) — bukan DB production terpisah.
 - Kuota Gemini gratis (20 request/hari/model untuk klasifikasi) **dipakai
   bersama** oleh laptop dan server karena API key-nya sama.
+
+---
+
+### 5.0 Migrasi database: Supabase Sydney → Singapore
+
+*Dikerjakan sebelum §5.1 supaya `DATABASE_URL` yang dipakai di git commit/env
+Render (§5.3) sudah final, tidak perlu diganti dua kali.*
+
+- [x] **Buat project Supabase baru di region Singapore**
+      — concepts: deployment-hosting
+      - Langkah: supabase.com/dashboard → New Project → **beda organisasi
+        atau project baru** (bukan menimpa yang lama — free tier boleh 2
+        project aktif) → Region: **Southeast Asia (Singapore)** → set
+        database password baru (beda dari yang lama) → Create.
+      - Simpan password itu sementara, jangan ditempel di chat/file repo.
+      - Hasil: dashboard project baru muncul, status "Setting up project"
+        lalu jadi "Active".
+- [x] **Aktifkan pgvector di project baru & catat connection string**
+      — concepts: relational-schema-design
+      - Langkah: di dashboard project baru → **Connect** (tombol di navbar
+        atas) → tab **Session pooler** (bukan "Direct connection" — alasan di
+        catatan fakta repo di atas) → salin connection string-nya.
+      - Hasil: connection string berbentuk
+        `postgresql://postgres.<ref-baru>:<password>@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres`.
+        Perhatikan `ap-southeast-1` (Singapore), bukan `-2` (Sydney).
+- [x] **Uji koneksi & aktifkan extension pgvector di project baru**
+      — concepts: relational-schema-design
+      - Langkah (di `backend/`, Git Bash) — env var di depan perintah cuma
+        berlaku untuk satu perintah itu, `.env` tidak ikut tersentuh:
+        ```bash
+        DATABASE_URL="<connection-string-baru>" venv/Scripts/python.exe check_db.py
+        ```
+      - Hasil: `Connected OK.` dan `pgvector extension: ('vector', '0.8.2')`
+        (atau versi terbaru yang tersedia).
+      - Kalau error koneksi timeout: cek lagi apakah host-nya bertuliskan
+        `-1` (Singapore), dan project sudah berstatus Active (bukan masih
+        provisioning).
+- [x] **Jalankan migrasi Alembic di project baru (dari kosong)**
+      — concepts: orm-migrations
+      - Langkah (di `backend/`):
+        ```bash
+        DATABASE_URL="<connection-string-baru>" venv/Scripts/python.exe -m alembic upgrade head
+        ```
+      - Hasil: output menunjukkan kedua revisi diterapkan berurutan
+        (`9a2d76c47977` lalu `66de89f6cd67`). Ini sekaligus jadi bukti bahwa
+        migrasi kita benar-benar bisa jalan dari database kosong (uji yang
+        belum pernah dilakukan sebelumnya, karena DB lama sudah "dibangun
+        pelan-pelan" sejak Fase 1).
+      - Kalau gagal di revisi pertama karena `ImportError: pgvector`: pastikan
+        `venv/Scripts/python.exe` yang dipakai (bukan Python sistem).
+      - **Bug nyata ketemu di sini (2026-09-22):** gagal dengan
+        `UndefinedObject: index "idx_items_created_at" does not exist`.
+        Sebabnya, migrasi `9a2d76c47977` diautogenerate dulu terhadap DB
+        Sydney yang MASIH menyisakan tabel `items` dari project Supabase
+        sebelumnya (lihat knowledge-graph.md, `orm-migrations`) -- operasi
+        `drop_index`/`drop_table` untuk tabel itu ikut ter-diff sebagai
+        bagian migrasi, padahal itu cuma beres-beres lingkungan lama, bukan
+        evolusi skema yang sah. Tidak ketahuan selama ini karena DB Sydney
+        satu-satunya yang pernah dipakai memang sudah punya (lalu kehilangan)
+        tabel itu. Baru ketahuan sekarang karena Singapore benar-benar kosong
+        sejak awal. **Fix:** hapus semua baris terkait `items` dari
+        `upgrade()` dan `downgrade()` di file migrasi itu -- aman dilakukan
+        karena revision id-nya sudah tercatat di `alembic_version` DB lama;
+        Alembic cuma mencocokkan revision id, tidak mendiff ulang isi migrasi
+        yang sudah diterapkan. Diverifikasi: `alembic current` di Sydney
+        (pakai `.env` lama) maupun Singapore sama-sama `66de89f6cd67 (head)`
+        setelah fix.
+- [x] **Tulis script salin data, `backend/migrate_to_singapore.py`**
+      — concepts: relational-schema-design
+      - Langkah: buat file itu berisi persis:
+        ```python
+        """
+        Sekali pakai: salin semua baris dari project Supabase LAMA (Sydney) ke
+        yang BARU (Singapore). Jalankan sekali, hapus file ini setelahnya --
+        bukan bagian dari aplikasi.
+
+        Kedua URL diberikan lewat argumen command-line, BUKAN disimpan di
+        file/.env manapun -- supaya connection string project lama tidak
+        tertinggal di mana-mana setelah migrasi selesai.
+
+        Usage:
+            venv/Scripts/python.exe migrate_to_singapore.py "<URL_LAMA>" "<URL_BARU>"
+        """
+        import sys
+
+        from sqlalchemy import create_engine, text
+
+
+        def connect(url: str):
+            # Pola sama seperti database.py: skema polos "postgresql://"
+            # diarahkan eksplisit ke driver psycopg (v3), bukan psycopg2.
+            return create_engine(url.replace("postgresql://", "postgresql+psycopg://", 1))
+
+
+        old_engine = connect(sys.argv[1])
+        new_engine = connect(sys.argv[2])
+
+        with old_engine.connect() as old, new_engine.connect() as new:
+            users = old.execute(text("SELECT * FROM users")).mappings().all()
+            print(f"{len(users)} users di DB lama")
+            for u in users:
+                new.execute(
+                    text(
+                        "INSERT INTO users (id, email, password_hash, created_at) "
+                        "VALUES (:id, :email, :password_hash, :created_at) "
+                        "ON CONFLICT (id) DO NOTHING"
+                    ),
+                    dict(u),
+                )
+            new.commit()
+
+            items = old.execute(text("SELECT * FROM saved_items")).mappings().all()
+            print(f"{len(items)} saved_items di DB lama")
+            for i in items:
+                # Query mentah (bukan lewat model SavedItem) mengembalikan
+                # kolom embedding sebagai teks literal vektor apa adanya
+                # (mis. "[0.0123,-0.045,...]"), jadi tinggal di-CAST balik.
+                new.execute(
+                    text(
+                        "INSERT INTO saved_items "
+                        "(id, user_id, url, platform, title, summary, category, "
+                        " raw_content, embedding, created_at) "
+                        "VALUES "
+                        "(:id, :user_id, :url, :platform, :title, :summary, :category, "
+                        " :raw_content, CAST(:embedding AS vector), :created_at) "
+                        "ON CONFLICT (id) DO NOTHING"
+                    ),
+                    dict(i),
+                )
+            new.commit()
+
+            old_n = old.execute(text("SELECT count(*) FROM saved_items")).scalar()
+            new_n = new.execute(text("SELECT count(*) FROM saved_items")).scalar()
+            ok = "OK" if old_n == new_n else "BEDA -- JANGAN LANJUT, cek manual"
+            print(f"Verifikasi jumlah saved_items: lama={old_n} baru={new_n} [{ok}]")
+        ```
+      - Hasil: file tersimpan di `backend/migrate_to_singapore.py`.
+- [x] **Jalankan migrasi data**
+      - Langkah (di `backend/`):
+        ```bash
+        venv/Scripts/python.exe migrate_to_singapore.py "<connection-string-LAMA-Sydney>" "<connection-string-BARU-Singapore>"
+        ```
+      - Hasil: baris terakhir `Verifikasi jumlah saved_items: lama=N baru=N [OK]`
+        dengan N sama persis. Kalau `[BEDA]`: **jangan lanjut** — DB lama
+        belum disentuh sama sekali oleh script ini (cuma dibaca), jadi aman
+        untuk didiagnosis ulang tanpa risiko kehilangan data.
+- [x] **Verifikasi manual login + data di DB baru**
+      - Langkah (di `backend/`):
+        ```bash
+        DATABASE_URL="<connection-string-baru>" venv/Scripts/python.exe -c "
+        from database import SessionLocal; from sqlalchemy import text
+        with SessionLocal() as db:
+            print(db.execute(text('select count(*) from users')).scalar(), 'users')
+            print(db.execute(text('select count(*), count(embedding) from saved_items')).all())
+        "
+        ```
+      - Hasil: jumlah user dan item sama dengan yang di database lama, dan
+        `count(embedding)` juga sama (bukti vektor ikut tersalin dengan benar,
+        bukan cuma baris kosong).
+- [x] **Ganti `backend/.env` ke database baru secara permanen**
+      — concepts: api-key-secrets-management
+      - Langkah: buka `backend/.env`, ganti nilai `DATABASE_URL` jadi
+        connection string Singapore yang baru.
+      - Hasil (di `backend/`): `venv/Scripts/python.exe check_db.py` (tanpa
+        env var di depan, memakai `.env`) tetap mencetak `Connected OK.`
+- [x] **Retest aplikasi lokal penuh dengan DB baru**
+      - Langkah: jalankan backend (`venv/Scripts/python.exe -m uvicorn main:app --port 8000`),
+        buka app di emulator/HP yang masih arah ke `10.0.2.2:8000`/localhost,
+        login dengan akun uji, pastikan daftar item, pencarian, dan "Rangkum
+        dengan AI" semuanya masih jalan seperti sebelumnya.
+      - Hasil: semua fitur berfungsi sama seperti sebelum migrasi. Ini bukti
+        migrasi tidak merusak apa pun sebelum lanjut ke commit/deploy.
+      - Kalau ada yang beda: jangan lanjut ke §5.1 dulu, cari tahu dulu
+        bedanya di mana (kemungkinan besar salah salin connection string).
+- [x] **Hapus script migrasi & connection string lama dari mana pun**
+      — concepts: api-key-secrets-management
+      - Langkah: `rm backend/migrate_to_singapore.py` (di `backend/`).
+        Bersihkan juga connection string lama dari clipboard/catatan
+        sementara mana pun kamu menyimpannya.
+      - Hasil: file tidak ada lagi (`git status` di §5.1 nanti tidak akan
+        menyinggungnya sama sekali).
+- [ ] **Pause (jangan hapus dulu) project Supabase lama**
+      - Langkah: dashboard project **lama** (Sydney) → Settings → General →
+        **Pause project**.
+      - Kenapa pause, bukan langsung delete: kalau nanti ternyata ada yang
+        kelewat tersalin, project lama masih bisa dibuka lagi untuk dicek.
+        Hapus permanen belakangan, setelah project baru terbukti stabil
+        dipakai beberapa hari (bukan bagian task fase ini).
 
 ---
 
@@ -471,6 +678,26 @@ Singapore (`ap-southeast-1`) — bukan bagian fase ini.
         lalu `git push -u origin main`
       - Hasil: file tampil di halaman GitHub. Klik folder `backend/` dan
         pastikan **tidak ada** `.env` maupun `venv/` di sana.
+
+**Amandemen (2026-09-22) — `.gitignore` root ketinggalan di commit pertama.**
+Kejadian: `.gitignore` root sempat dibuat di disk tapi lupa di-`git add`
+sebelum commit pertama, jadi `.claude/CLAUDE.md` ikut ter-track (dua commit
+sudah kadung ter-push). **Bukan kebocoran secret** — dicek lewat
+`git grep` di seluruh history: `.env` dan `venv/` tetap aman karena sudah
+dilindungi `backend/.gitignore` yang independen dari file root. Yang bocor
+cuma file instruksi proyek, tanpa credential apa pun.
+
+Fix-nya **tidak** pakai rewrite history/force-push (itu obat untuk secret
+sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
+- [ ] Ubah `.gitignore` root: baris `.claude/settings.local.json` diganti
+      `.claude/` (kamu putuskan seluruh folder itu bukan bagian repo, bukan
+      cuma file settings-nya)
+- [ ] `git rm -r --cached .claude` lalu `git add .gitignore`
+- [ ] Commit: `git commit -m "chore: add root .gitignore, stop tracking .claude/"`
+- [ ] Push tanpa `--force`: `git push`
+- [ ] Verifikasi di GitHub: buka repo di browser, pastikan folder `.claude`
+      sudah tidak ada di halaman file (riwayat lama tetap menyimpannya, itu
+      wajar dan tidak masalah karena isinya bukan secret)
 
 ### 5.2 File konfigurasi deploy
 
