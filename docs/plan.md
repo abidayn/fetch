@@ -403,9 +403,9 @@ Karena project Supabase sekarang cuma berisi data uji (~25–30 baris, akun
 `rag-test` + beberapa item manual — tidak ada user asli), biaya pindah hari
 ini nyaris nol. Menunda pindah sampai ada data user sungguhan akan jauh lebih
 berisiko. Maka: **buat project Supabase baru di `ap-southeast-1` (Singapore),
-migrasi data, lalu deploy ke Render langsung dengan `DATABASE_URL` Singapore**
+migrasi data, lalu deploy ke Railway langsung dengan `DATABASE_URL` Singapore**
 — supaya tidak perlu deploy dua kali. Task-nya di §5.0 di bawah, **sebelum**
-§5.1, karena tidak bergantung pada git dan environment variable Render (§5.3)
+§5.1, karena tidak bergantung pada git dan environment variable Railway (§5.3)
 butuh nilai `DATABASE_URL` yang sudah final.
 
 Efek samping yang perlu diketahui, di luar soal region: project Supabase
@@ -413,14 +413,48 @@ gratis **otomatis pause setelah 1 minggu tidak dipakai** (beda dari, dan di
 luar, soal tidurnya Render setelah 15 menit idle). Kalau app tidak disentuh
 seminggu, siap-siap ada dua lapis "bangun tidur", bukan cuma satu.
 
+**Amandemen (2026-09-22 #2) — Render minta kartu kredit, pindah ke Railway.**
+Waktu benar-benar daftar, Render meminta kartu kredit di awal (bukan cuma
+"kalau kepakai lebih dari limit" seperti dugaan riset awal -- kebijakan itu
+sepertinya berubah, atau berlaku beda per akun/region). Karena tidak punya
+kartu kredit, host dipindah ke **Railway**.
+
+Kabar baiknya: Railway juga punya region **Southeast Asia (Singapore)**
+(`asia-southeast1-eqsg3a`), jadi keputusan migrasi DB ke Singapore di atas
+tetap relevan tanpa perlu dipikir ulang. Trial akun baru dapat **kredit
+gratis $5 selama 30 hari, tanpa kartu kredit**. Setelah itu (habis masa atau
+kreditnya), akun otomatis turun ke plan **Free: $1 kredit/bulan** -- tetap
+tanpa kartu, tapi jauh lebih kecil dari Render.
+
+**Konsekuensi jujur yang perlu diketahui**, beda dari asumsi Render sebelumnya:
+- Estimasi kasar biaya kalau backend jalan 24/7 sebulan penuh (RAM+CPU
+  minimal): **± $3/bulan** -- lebih besar dari jatah $1/bulan plan Free.
+  Artinya **tidak realistis dibiarkan menyala terus-menerus selamanya**
+  seperti asumsi lama soal Render, kecuali suatu saat siap pasang kartu.
+- Mitigasi: Railway punya fitur **Serverless** (tidur otomatis setelah 5
+  menit tanpa trafik) tapi **harus diaktifkan manual** -- beda dari Render
+  yang tidur otomatis by default. Ada task khusus mengaktifkannya di bawah.
+  Dengan ini aktif, biaya idle mendekati nol, cuma kena kredit saat benar-
+  benar dipakai (uji coba, demo).
+- Pemilihan region **belum pasti tersedia untuk akun trial/free** -- ada
+  laporan komunitas (walau agak lama) bahwa pemilihan region pernah dibatasi
+  untuk plan berbayar. Task pertama di §5.3 sengaja menyuruh cek ini di
+  awal, bukan di akhir, supaya kalau ternyata terkunci, ketahuan sebelum
+  banyak langkah lain dikerjakan sia-sia.
+- Wake-up dari tidur (Serverless) bisa memunculkan **1x respons 502** di
+  request pertama sebelum berhasil, beda dari Render yang cuma lambat tanpa
+  error. UI mobile kita belum menangani retry otomatis untuk ini -- kalau
+  kejadian, coba lagi manual (refresh/re-share).
+
 **Fakta repo yang membentuk task di bawah** (dicek 2026-09-21, diperbarui 2026-09-22):
 - Python lokal **3.14** → Dockerfile memakai image `python:3.14-slim` supaya
   versinya sama persis dengan yang sudah teruji.
 - `DATABASE_URL` memakai **Supavisor session pooler**, bukan koneksi direct.
   Ini penting: koneksi *direct* Supabase (`db.<ref>.supabase.co`) hanya IPv6,
-  dan Render tidak mendukung IPv6 keluar. Project baru di Singapore juga wajib
-  pakai pooler (host-nya akan berubah dari `aws-0-ap-southeast-2...` jadi
-  `aws-0-ap-southeast-1...` — dengan **-1** bukan **-2**, gampang tersalah-baca).
+  dan kebanyakan PaaS gratis (termasuk Railway) tidak mendukung IPv6 keluar.
+  Project baru di Singapore juga wajib pakai pooler (host-nya berubah dari
+  `aws-0-ap-southeast-2...` jadi `aws-0-ap-southeast-1...` — dengan **-1**
+  bukan **-2**, gampang tersalah-baca).
 - Folder `FETCH/` sudah jadi git repo dan sudah di-push ke GitHub (lihat §5.1).
 - Dev dan production akan tetap memakai **satu database Supabase yang sama**
   (yang baru, Singapore) — bukan DB production terpisah.
@@ -432,7 +466,7 @@ seminggu, siap-siap ada dua lapis "bangun tidur", bukan cuma satu.
 ### 5.0 Migrasi database: Supabase Sydney → Singapore
 
 *Dikerjakan sebelum §5.1 supaya `DATABASE_URL` yang dipakai di git commit/env
-Render (§5.3) sudah final, tidak perlu diganti dua kali.*
+Railway (§5.3) sudah final, tidak perlu diganti dua kali.*
 
 - [x] **Buat project Supabase baru di region Singapore**
       — concepts: deployment-hosting
@@ -708,7 +742,7 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
         # Versi Python sama dengan venv lokal (3.14) -- versi yang sudah teruji.
         FROM python:3.14-slim
 
-        # Log langsung keluar (tanpa buffer) supaya tampil real-time di dashboard Render.
+        # Log langsung keluar (tanpa buffer) supaya tampil real-time di dashboard host.
         ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 
         WORKDIR /app
@@ -720,8 +754,9 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
 
         COPY . .
 
-        # Render memberi port lewat env var PORT. Satu worker saja: pool koneksi
-        # Supavisor free tier terbatas, dan BackgroundTasks berjalan in-process.
+        # Host (Render/Railway/dll) memberi port lewat env var PORT. Satu worker
+        # saja: pool koneksi Supavisor free tier terbatas, dan BackgroundTasks
+        # berjalan in-process.
         CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
         ```
       - Hasil: file ada di `backend/Dockerfile` (tanpa ekstensi).
@@ -741,34 +776,53 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
         `docker run --rm -p 8000:8000 --env-file .env fetch-api`, lalu di
         terminal lain `curl localhost:8000/health`.
       - Hasil: `{"status":"ok"}`. Kalau Docker tidak terpasang, lewati —
-        build log Render di 5.4 jadi pengujiannya.
+        build log Railway di 5.4 jadi pengujiannya.
 - [ ] **Commit & push file deploy**
       - Langkah (di `FETCH/`): `git add backend/Dockerfile backend/.dockerignore`
-        → `git commit -m "Add Dockerfile for Render deploy"` → `git push`
+        → `git commit -m "Add Dockerfile for deploy"` → `git push`
       - Hasil: kedua file terlihat di GitHub.
+      - Catatan: kalau kamu sudah pernah commit ini lebih dulu dengan pesan
+        yang menyebut "Render" (sebelum amandemen pivot ke Railway) -- tidak
+        apa-apa, Dockerfile-nya sendiri host-agnostic (cuma baca env var
+        `PORT`, tidak spesifik Render). Tidak perlu commit ulang cuma buat
+        ganti nama di pesan commit lama.
 
-### 5.3 Render: akun, service, environment variables
+### 5.3 Railway: akun, service, environment variables
 
-- [ ] **Buat akun Render**
+- [ ] **Buat akun Railway & cek TIDAK diminta kartu kredit**
       — concepts: deployment-hosting
-      - Langkah: render.com → Get Started → **Sign up with GitHub** (supaya
-        Render bisa membaca repo privatmu).
-      - Hasil: masuk ke dashboard Render.
-- [ ] **Buat Web Service dari repo**
+      - Langkah: railway.com → Login/Start a New Project → **Login with
+        GitHub** (supaya Railway bisa membaca repo privatmu).
+      - Hasil: masuk ke dashboard Railway **tanpa** diminta nomor kartu di
+        mana pun selama alur ini. Kalau ternyata diminta juga (kebijakan
+        bisa beda per akun): berhenti, jangan isi, dan kabari dulu sebelum
+        lanjut -- berarti perlu dicari opsi lain lagi.
+- [ ] **Buat project baru dari repo GitHub**
       — concepts: deployment-hosting
-      - Langkah: New + → **Web Service** → pilih repo `fetch` (kalau tidak
-        muncul: "Configure account" → beri akses ke repo itu). Isi:
-        - Name: `fetch-api` (menentukan URL: `https://fetch-api.onrender.com`;
-          kalau nama sudah dipakai orang, Render menambah akhiran acak)
-        - Region: **Singapore (Southeast Asia)**
-        - Branch: `main`
-        - Root Directory: `backend`
-        - Language/Runtime: **Docker** (Render mendeteksi Dockerfile)
-        - Instance Type: **Free**
-      - **JANGAN klik Deploy dulu** — isi environment variables di dua task
-        berikut (di halaman yang sama, bagian "Environment Variables"). Kalau
-        terlanjur deploy, tidak apa-apa: deploy pertama akan crash karena env
-        kosong; isi env lalu deploy ulang.
+      - Langkah: New Project → **Deploy from GitHub repo** → pilih repo
+        `fetch` (kalau tidak muncul: "Configure GitHub App" → beri akses ke
+        repo itu).
+      - Hasil: satu service baru muncul di project, awalnya kemungkinan
+        gagal build (belum dikonfigurasi) -- itu normal, lanjut ke task
+        berikutnya dulu, jangan panik lihat error di titik ini.
+- [ ] **Set Root Directory ke `backend`**
+      — concepts: deployment-hosting
+      - Langkah: klik service → **Settings** → bagian **Source** → Root
+        Directory: isi `backend`.
+      - Hasil: field tersimpan. Ini yang membuat Railway membaca
+        `backend/Dockerfile` sebagai root build-nya, bukan root repo (repo
+        kita monorepo: `backend/` + `mobile/` + `docs/`).
+- [ ] **Cek & pilih region Singapore — lakukan ini SEKARANG, bukan belakangan**
+      — concepts: deployment-hosting
+      - Langkah: Settings → bagian **Region** (atau saat konfigurasi
+        deployment pertama) → cari **Southeast Asia (Singapore)**.
+      - Hasil kalau tersedia: pilih itu, lanjut normal.
+      - Hasil kalau TERKUNCI/tidak muncul (kemungkinan nyata di plan Trial/
+        Free, lihat amandemen di atas): catat region default yang dipakai,
+        lanjutkan deploy ke situ dulu (jangan berhenti total di sini) --
+        efeknya cuma latensi DB lebih tinggi dari yang direncanakan, bukan
+        kegagalan. Kabari supaya kita evaluasi ulang opsi lain kalau memang
+        terkunci.
 - [ ] **Buat JWT secret baru khusus production**
       — concepts: api-key-secrets-management
       - Langkah (di `backend/`):
@@ -778,25 +832,36 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
         sudah berkali-kali tersentuh selama development; production pantas
         punya secret sendiri. Token lama dari laptop jadi tidak berlaku di
         server — memang itu tujuannya.
-- [ ] **Isi environment variables di Render**
+- [ ] **Isi environment variables di Railway**
       — concepts: api-key-secrets-management
-      - Langkah: bagian Environment Variables → Add, tiga baris:
+      - Langkah: tab **Variables** di service → **New Variable** (atau "Raw
+        Editor" untuk tempel sekaligus), tiga baris:
 
         | Key | Value |
         |---|---|
-        | `DATABASE_URL` | salin persis dari `backend/.env` (yang host-nya `...pooler.supabase.com:5432`) |
+        | `DATABASE_URL` | salin persis dari `backend/.env` (host-nya `...pooler.supabase.com:5432`, region Singapore) |
         | `GEMINI_API_KEY` | salin dari `backend/.env` |
         | `JWT_SECRET_KEY` | hasil task sebelumnya |
 
       - Perhatikan: tanpa tanda kutip, tanpa spasi di awal/akhir. Secret
-        diisi di dashboard, **bukan** di file mana pun di repo — itu inti dari
-        manajemen secret lewat environment variable.
-      - Hasil: tiga env var tersimpan.
+        diisi di dashboard, **bukan** di file mana pun di repo.
+      - Hasil: tiga env var tersimpan. Railway menandainya sebagai
+        "staged changes" -- klik **Deploy** di pojok untuk menerapkannya
+        (jangan lupa, beda dari Render yang langsung apply).
+- [ ] **Generate domain publik**
+      — concepts: deployment-hosting
+      - Langkah: Settings → **Networking** → **Public Networking** → klik
+        **Generate Domain**.
+      - Kenapa task terpisah: **beda dari Render, Railway TIDAK otomatis
+        kasih URL publik** -- tanpa langkah ini service jalan tapi tidak
+        bisa diakses dari luar sama sekali.
+      - Hasil: muncul URL berbentuk `https://<nama-acak>.up.railway.app`.
+        Catat URL ini, dipakai di semua task setelah ini.
 - [ ] **Set health check path**
-      - Langkah: Advanced (atau Settings setelah service jadi) →
-        Health Check Path: `/health`
-      - Kenapa: Render baru mengalihkan trafik ke versi baru setelah
-        `/health` menjawab 200 — deploy yang rusak tidak menggantikan yang sehat.
+      - Langkah: Settings → **Deploy** → Healthcheck Path: `/health`.
+      - Kenapa: Railway baru mengalihkan trafik ke versi baru setelah
+        `/health` menjawab 200 — deploy yang rusak tidak menggantikan yang
+        sehat. Default timeout 300 detik, cukup untuk build kita.
 
 ### 5.4 Deploy & verifikasi server
 
@@ -813,7 +878,7 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
         atau salah nama.
 - [ ] **Verifikasi `/health` dari URL publik**
       — concepts: deployment-hosting
-      - Langkah (Git Bash): `curl -i https://<nama-service>.onrender.com/health`
+      - Langkah (Git Bash): `curl -i https://<domain-railway>/health`
       - Hasil: `HTTP/2 200` dan body `{"status":"ok"}`. Buka juga URL yang
         sama di browser HP (pakai data seluler, bukan WiFi rumah) — harus
         tampil teks yang sama.
@@ -828,21 +893,21 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
 - [ ] **Uji login production dengan curl**
       - Langkah (Git Bash), pakai akun uji yang sudah ada:
         ```bash
-        curl -s -X POST https://<nama-service>.onrender.com/auth/login \
+        curl -s -X POST https://<domain-railway>/auth/login \
           -H "Content-Type: application/json" \
           -d '{"email":"rag-test@example.com","password":"ragtest12345"}'
         ```
       - Hasil: JSON berisi `"access_token":"eyJ..."`. Salin nilai token itu
         (tanpa kutip) untuk task-task berikut.
-      - Kalau `500`: buka Logs Render — biasanya `DATABASE_URL` salah.
+      - Kalau `500`: buka Logs Railway (tab **Deployments** → klik deployment aktif → **View Logs**) — biasanya `DATABASE_URL` salah.
 - [ ] **Uji daftar item production**
-      - Langkah: `curl -s https://<nama-service>.onrender.com/items -H "Authorization: Bearer <token>"`
+      - Langkah: `curl -s https://<domain-railway>/items -H "Authorization: Bearer <token>"`
       - Hasil: JSON array berisi item-item akun uji (Rendang, Deadlift, dst.) —
         bukti server membaca database yang sama.
 - [ ] **Uji pencarian semantik production**
       - Langkah:
         ```bash
-        curl -s -w "\n%{time_total}s\n" -X POST https://<nama-service>.onrender.com/search \
+        curl -s -w "\n%{time_total}s\n" -X POST https://<domain-railway>/search \
           -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
           -d '{"query":"olahraga angkat beban"}'
         ```
@@ -851,11 +916,11 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
 - [ ] **Uji simpan + pengayaan AI di server**
       - Langkah:
         ```bash
-        curl -s -X POST https://<nama-service>.onrender.com/items \
+        curl -s -X POST https://<domain-railway>/items \
           -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
           -d '{"url":"https://en.wikipedia.org/wiki/Gado-gado"}'
         ```
-        Tunggu ± 15 detik, lalu buka tab Logs Render.
+        Tunggu ± 15 detik, lalu buka Logs Railway.
       - Hasil: log berisi `enrichment - item ... diperkaya: platform=generic ... ai=True embedding=True`.
       - Kalau `ai=False` dengan `429` di log: kuota harian Gemini habis
         (dipakai bersama dengan laptop). Bukan bug deploy — coba lagi besok.
@@ -869,12 +934,24 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
           tetap tersimpan dengan judul + deskripsi dari Open Graph
           (graceful degradation bekerja sesuai desain), hanya lebih tipis.
           Catat sebagai keterbatasan production, bukan kegagalan task.
+- [ ] **Aktifkan fitur Serverless (tidur otomatis)**
+      - Langkah: Settings service → cari bagian **Serverless** → aktifkan.
+      - Kenapa wajib, bukan opsional: beda dari Render, di Railway ini
+        **mati by default**. Tanpa ini, service menyala 24/7 dan menghabiskan
+        kredit trial/bulanan jauh lebih cepat (lihat amandemen di atas,
+        estimasi ± $3/bulan kalau menyala terus tanpa fitur ini).
+      - Hasil: ada indikator "Serverless enabled" di dashboard.
 - [ ] **Uji perilaku cold start (service tidur)**
-      - Langkah: jangan sentuh server ≥ 20 menit (dashboard menunjukkan
-        service tidur). Lalu jalankan lagi
-        `curl -i -w "\n%{time_total}s\n" https://<nama-service>.onrender.com/health`.
-      - Hasil: tetap `200`, tapi butuh ± 30–60 detik. Catat angkanya — ini
-        yang akan dirasakan saat share pertama setelah HP lama tidak dipakai.
+      - Langkah: jangan sentuh server ≥ 10 menit (Railway tidur setelah ±5
+        menit tanpa trafik keluar-masuk, beda dari Render yang 15 menit).
+        Lalu jalankan `curl -i -w "\n%{time_total}s\n" https://<domain-railway>/health`.
+      - Hasil yang mungkin — **catat mana yang terjadi**:
+        - Langsung `200` setelah beberapa detik jeda (mirip pengalaman Render).
+        - **Satu kali `502`**, lalu `curl` yang sama diulang langsung `200`.
+          Ini perilaku terdokumentasi Railway (request pertama ke service
+          yang tidur kadang gagal sekali sebelum instance-nya benar-benar
+          hidup) — bukan bug, tapi catat karena app mobile kita **belum**
+          menangani retry otomatis untuk kasus ini.
 
 ### 5.5 Build app untuk production
 
@@ -901,7 +978,7 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
         `git commit -m "Configurable API base URL via dart-define"` → `git push`
 - [ ] **Build release APK dengan URL production**
       - Langkah (di `mobile/`, Git Bash):
-        `/c/flutter/bin/flutter build apk --release --dart-define=API_BASE_URL=https://<nama-service>.onrender.com`
+        `/c/flutter/bin/flutter build apk --release --dart-define=API_BASE_URL=https://<domain-railway>`
         (tanpa garis miring `/` di akhir URL — kode menambahkan `/items` dst.
         sendiri; garis miring ganda bisa bikin 404.)
       - Hasil: `√ Built build\app\outputs\flutter-apk\app-release.apk (xx.xMB)`.
@@ -969,10 +1046,14 @@ bicara ke server publik, bukan ke laptop. Backend lokal di laptop boleh mati.
       - Hasil: app terbuka (tidak macet di splash — bug BLOKIR-D dulu), sheet
         "Saved" muncul, item tersimpan.
 - [ ] **Share pertama setelah server tidur**
-      - Langkah: jangan buka Fetch ≥ 20 menit → share satu link.
-      - Hasil: tetap tersimpan, tapi penyimpanan bisa tertahan ± 30–60 detik
-        (server Render sedang bangun). Catat pengalamanmu: masih bisa
-        diterima, atau perlu ditangani nanti (mis. ping berkala)?
+      - Langkah: jangan buka Fetch ≥ 10 menit (Railway) → share satu link.
+      - Hasil: tetap tersimpan, tapi bisa tertahan beberapa detik-menit
+        (server Railway sedang bangun dari mode Serverless), atau sheet
+        "Saved" sempat menampilkan pesan gagal sekali (kalau kena 502 di
+        request pertama, lihat §5.4) — coba share ulang kalau itu terjadi.
+        Catat pengalamanmu: masih bisa diterima, atau perlu ditangani nanti
+        (mis. retry otomatis di app, atau matikan Serverless kalau
+        kreditnya masih cukup)?
 - [ ] **Cari item yang barusan disimpan**
       - Langkah: ikon cari → ketik kalimat yang menggambarkan video/link tadi
         *dengan kata-kata lain* (bukan judulnya) → enter.
@@ -986,7 +1067,8 @@ bicara ke server publik, bukan ke laptop. Backend lokal di laptop boleh mati.
         browser), karena kedua app terpasang di HP.
 - [ ] **Catat angka & temuan production ke PROJECT_DESCRIPTION.md**
       - Langkah: tambahkan ke `docs/PROJECT_DESCRIPTION.md` bagian
-        "Deployment": host & region (Render Singapore), latensi `/search` dari
+        "Deployment": host & region (Railway, region yang ternyata
+        terpakai -- Singapore kalau tersedia di §5.3), latensi `/search` dari
         curl, lama cold start, hasil uji yt-dlp dari server, dan keterbatasan
         yang ditemukan. Doc itu memang minta angka nyata setelah project jalan.
       - Hasil: bagian Deployment berisi angka hasil pengukuranmu sendiri.
