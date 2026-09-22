@@ -41,6 +41,18 @@ bukan lagi syarat keras sebelum mulai.
   pgvector.sqlalchemy` di file migrasi -> NameError kalau tidak diperbaiki
   manual. Ketemu juga DB lama (project Supabase sebelumnya) yang masih
   berisi tabel `items` beda skema, sengaja di-drop atas konfirmasi user.
+- note (2026-09-22): drop tabel `items` di atas ternyata ikut TERCATAT di
+  migrasi `9a2d76c47977` sebagai `op.drop_index`/`op.drop_table` -- bukan
+  bagian sah evolusi skema, cuma kebetulan ikut ter-diff karena autogenerate
+  dijalankan waktu DB Sydney masih kotor. Baru ketahuan waktu migrasi Fase 5
+  ke project Supabase Singapore yang benar-benar kosong: gagal dengan
+  `UndefinedObject: index "idx_items_created_at" does not exist`. Pelajaran:
+  autogenerate mendiff terhadap STATE DATABASE saat itu, bukan terhadap
+  "riwayat skema yang seharusnya" -- kalau DB pembanding kotor, hasil diffnya
+  ikut kotor, dan itu baru kelihatan saat migrasi dijalankan ke instalasi
+  fresh yang lain. Fix: hapus operasi terkait `items` dari file migrasi (aman
+  -- Alembic tidak mendiff ulang isi migrasi yang revision id-nya sudah
+  tercatat di database manapun, cuma mencocokkan id).
 
 ## jwt-auth
 - status: introduced
