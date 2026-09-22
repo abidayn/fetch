@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- LaunchTheme sekarang extend Theme.SplashScreen (dari androidx
+         core-splashscreen), bukan Theme.Light.NoTitleBar langsung. Ini
+         dipasang untuk mengatasi BLOKIR-D (docs/plan.md): splash macet
+         permanen kalau app di-cold-start lewat share-sheet (ACTION_SEND).
+         Diagnosis: mekanisme auto-dismiss splash bawaan Flutter (deteksi
+         first-frame implisit) tidak selalu terpicu benar kalau Activity
+         dibuat lewat trampoline chooser Android, bukan tap launcher biasa.
+         Theme.SplashScreen + installSplashScreen() di MainActivity.kt
+         memberi kontrol eksplisit lewat setKeepOnScreenCondition, yang
+         terikat ke sinyal draw-pertama Activity di level Android, bukan
+         ke deteksi Flutter yang ternyata tidak selalu terpicu itu. -->
+    <style name="LaunchTheme" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@android:color/white</item>
+        <item name="postSplashScreenTheme">@style/NormalTheme</item>
+    </style>
+    <!-- Theme applied to the Android Window as soon as the process has started.
+         This theme determines the color of the Android Window while your
+         Flutter UI initializes, as well as behind your Flutter UI while its
+         running.
+
+         This Theme is only used starting with V2 of Flutter's Android embedding. -->
+    <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
+        <item name="android:windowBackground">?android:colorBackground</item>
+    </style>
+</resources>
