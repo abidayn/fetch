@@ -921,7 +921,7 @@ nama, balik ke task "Isi environment variables di Railway" di §5.3.)*
       - Hasil: `HTTP/2 200` dan body `{"status":"ok"}`. Buka juga URL yang
         sama di browser HP (pakai data seluler, bukan WiFi rumah) — harus
         tampil teks yang sama.
-- [ ] **Verifikasi migrasi database = head**
+- [x] **Verifikasi migrasi database = head**
       — concepts: orm-migrations
       - Konteks: karena production memakai DB yang sama dengan dev, migrasi
         tidak perlu dijalankan lagi — tapi harus **dibuktikan**, bukan diasumsikan.
@@ -997,7 +997,7 @@ nama, balik ke task "Isi environment variables di Railway" di §5.3.)*
 
 ### 5.5 Build app untuk production
 
-- [ ] **Buat base URL API bisa diatur saat build**
+- [x] **Buat base URL API bisa diatur saat build**
       - Langkah: di `mobile/lib/api/api_client.dart`, ganti getter `_baseUrl`
         (sekarang hardcode `10.0.2.2`) menjadi:
         ```dart
@@ -1015,7 +1015,7 @@ nama, balik ke task "Isi environment variables di Railway" di §5.3.)*
       - Kenapa `--dart-define`, bukan langsung ganti string-nya: emulator
         tetap bisa dipakai untuk development tanpa mengedit kode bolak-balik.
       - Hasil: `/c/flutter/bin/flutter analyze` (di `mobile/`) → `No issues found!`
-- [ ] **Commit perubahan base URL**
+- [x] **Commit perubahan base URL**
       - Langkah: `git add mobile/lib/api/api_client.dart` →
         `git commit -m "Configurable API base URL via dart-define"` → `git push`
 - [ ] **Build release APK dengan URL production**
