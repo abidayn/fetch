@@ -26,12 +26,17 @@ class ApiClient {
   final TokenStorage _tokenStorage;
   ApiClient(this._tokenStorage);
 
+  /// Diisi saat build production: --dart-define=API_BASE_URL=https://...
+  /// Kalau tidak diisi (flutter run biasa saat dev), jatuh ke backend lokal.
+  static const _envBaseUrl = String.fromEnvironment('API_BASE_URL');
+
   /// Emulator Android punya jaringan virtual sendiri -- "localhost" di
   /// emulator menunjuk ke emulator itu sendiri, BUKAN ke mesin host tempat
   /// backend jalan. 10.0.2.2 adalah alias khusus yang disediakan Android
   /// emulator untuk menunjuk balik ke localhost host. Ini cuma berlaku
   /// untuk emulator resmi Android Studio -- device fisik butuh IP LAN asli.
   static String get _baseUrl {
+    if (_envBaseUrl.isNotEmpty) return _envBaseUrl;
     if (Platform.isAndroid) return 'http://10.0.2.2:8000';
     return 'http://127.0.0.1:8000';
   }

@@ -376,88 +376,106 @@ gagal**. Kerjakan berurutan — task belakang bergantung pada task depan.*
 (bukan PowerShell), dijalankan dari folder yang disebut di task. `<...>` =
 ganti dengan nilaimu sendiri (tanpa tanda `<>`).
 
-### Keputusan host (amandemen 2026-09-21)
+### Keputusan host — status saat ini + riwayat perubahan
 
-Catatan lama bilang backend "WAJIB di region yang sama dengan DB (Sydney)".
-Setelah dicek, itu tidak bisa dipenuhi dengan gratis dan sederhana:
+> **Status saat ini (2026-09-23):** host = **Railway**, region = **Singapore
+> kalau tersedia untuk plan trial/free** (dicek di task pertama §5.3 — belum
+> pasti, lihat catatan di situ), database = **Supabase Singapore**, repo
+> GitHub = **public**. Bagian di bawah ini riwayat kenapa sampai ke sini —
+> kalau cuma mau tahu status terkini, cukup baca kotak ini saja.
+
+#### Riwayat keputusan (urutan kronologis)
+
+**1. Keputusan awal (2026-09-21): Render, Singapore.**
+
+Perbandingan awal (kolom "Region DB" merujuk ke Sydney, lokasi DB waktu itu
+sebelum dipindah):
 
 | Opsi | Region DB kita (Sydney)? | Masalah |
 |---|---|---|
-| **Render (dipilih)** | Tidak ada — terdekat **Singapore** | Tidur setelah 15 menit idle, bangun ± 1 menit |
-| Google Cloud Run | Ada (`australia-southeast1`) | Butuh kartu kredit; CPU default hanya aktif *selama* request, padahal pengayaan AI kita jalan **setelah** response (`BackgroundTasks`) → bisa macet |
+| **Render (dipilih saat itu)** | Tidak ada — terdekat Singapore | Tidur setelah 15 menit idle, bangun ± 1 menit |
+| Google Cloud Run | Ada (`australia-southeast1`) | Butuh kartu kredit; CPU default cuma aktif *selama* request, padahal `BackgroundTasks` kita jalan **setelah** response → bisa macet |
 | Fly.io | Ada (`syd`) | Tidak ada free tier untuk akun baru |
-| Railway | Tidak ada Sydney | Hanya kredit trial |
+| Railway | Tidak ada Sydney | Waktu itu dikira "cuma kredit trial" — ternyata salah, ada plan Free permanen juga (lihat poin 3) |
 
-**Dipilih: Render, region Singapore, lewat Docker.**
+**2. Amandemen 2026-09-22 — database ikut dipindah ke Singapore.**
 
-**Amandemen (2026-09-22) — DB juga dipindah ke Singapore, sebelum deploy.**
-Catatan di atas awalnya menerima ± 90–100 ms/query Render(Singapore)↔DB(Sydney)
-sebagai "cukup baik". Setelah dianalisis ulang, itu ongkos yang salah untuk
-diterima secara permanen: latensi itu bukan cuma soal `/search` (yang memang
-didominasi panggilan Gemini 0,5–20 detik, jadi 90 ms tidak terasa) — ia juga
-kena ke **setiap** `POST /items` (simpan awal), `GET /items`, `DELETE`, dan
-login, yaitu operasi yang murni DB tanpa AI dan terjadi berkali-kali di setiap
-sesi. Menerimanya berarti membayar pajak itu selamanya di setiap ketukan.
-
-Karena project Supabase sekarang cuma berisi data uji (~25–30 baris, akun
-`rag-test` + beberapa item manual — tidak ada user asli), biaya pindah hari
-ini nyaris nol. Menunda pindah sampai ada data user sungguhan akan jauh lebih
-berisiko. Maka: **buat project Supabase baru di `ap-southeast-1` (Singapore),
-migrasi data, lalu deploy ke Railway langsung dengan `DATABASE_URL` Singapore**
-— supaya tidak perlu deploy dua kali. Task-nya di §5.0 di bawah, **sebelum**
-§5.1, karena tidak bergantung pada git dan environment variable Railway (§5.3)
-butuh nilai `DATABASE_URL` yang sudah final.
+Alasannya:
+- Rencana awal menerima ± 90–100 ms/query Render(Singapore)↔DB(Sydney)
+  sebagai "cukup baik" — tapi itu keliru untuk diterima permanen.
+- Latensi itu bukan cuma soal `/search` (yang memang didominasi panggilan
+  Gemini 0,5–20 detik, jadi 90 ms tidak terasa).
+- Latensi itu **juga kena ke setiap** `POST /items` (simpan awal),
+  `GET /items`, `DELETE`, dan login — operasi murni DB tanpa AI yang
+  terjadi berkali-kali di setiap sesi.
+- Menerimanya berarti membayar pajak itu selamanya di setiap ketukan.
+- Karena project Supabase waktu itu cuma berisi data uji (~25–30 baris,
+  tidak ada user asli), biaya pindah saat itu nyaris nol. Menunda sampai
+  ada data user sungguhan akan jauh lebih berisiko.
 
 Efek samping yang perlu diketahui, di luar soal region: project Supabase
-gratis **otomatis pause setelah 1 minggu tidak dipakai** (beda dari, dan di
-luar, soal tidurnya Render setelah 15 menit idle). Kalau app tidak disentuh
-seminggu, siap-siap ada dua lapis "bangun tidur", bukan cuma satu.
+gratis **otomatis pause setelah 1 minggu tidak dipakai** — ini beda dari,
+dan di luar, soal tidurnya host backend. Kalau app tidak disentuh seminggu,
+ada dua lapis "bangun tidur" untuk diperhitungkan, bukan cuma satu.
 
-**Amandemen (2026-09-22 #2) — Render minta kartu kredit, pindah ke Railway.**
+**3. Amandemen 2026-09-22 #2 — Render minta kartu kredit, pindah ke Railway.**
+
 Waktu benar-benar daftar, Render meminta kartu kredit di awal (bukan cuma
-"kalau kepakai lebih dari limit" seperti dugaan riset awal -- kebijakan itu
-sepertinya berubah, atau berlaku beda per akun/region). Karena tidak punya
-kartu kredit, host dipindah ke **Railway**.
+"kalau kepakai lebih dari limit" seperti dugaan riset awal — kebijakan itu
+sepertinya berubah, atau berlaku beda per akun/region).
 
 Kabar baiknya: Railway juga punya region **Southeast Asia (Singapore)**
-(`asia-southeast1-eqsg3a`), jadi keputusan migrasi DB ke Singapore di atas
-tetap relevan tanpa perlu dipikir ulang. Trial akun baru dapat **kredit
-gratis $5 selama 30 hari, tanpa kartu kredit**. Setelah itu (habis masa atau
-kreditnya), akun otomatis turun ke plan **Free: $1 kredit/bulan** -- tetap
-tanpa kartu, tapi jauh lebih kecil dari Render.
+(`asia-southeast1-eqsg3a`), jadi keputusan migrasi DB ke Singapore tetap
+relevan. Trial akun baru dapat kredit gratis $5 selama 30 hari, tanpa kartu
+kredit. Setelah itu, akun otomatis turun ke plan **Free: $1 kredit/bulan** —
+tetap tanpa kartu, tapi jauh lebih kecil dari asumsi lama soal Render.
 
-**Konsekuensi jujur yang perlu diketahui**, beda dari asumsi Render sebelumnya:
+Konsekuensi jujur yang perlu diketahui, beda dari asumsi Render sebelumnya:
 - Estimasi kasar biaya kalau backend jalan 24/7 sebulan penuh (RAM+CPU
-  minimal): **± $3/bulan** -- lebih besar dari jatah $1/bulan plan Free.
+  minimal): **± $3/bulan** — lebih besar dari jatah $1/bulan plan Free.
   Artinya **tidak realistis dibiarkan menyala terus-menerus selamanya**
-  seperti asumsi lama soal Render, kecuali suatu saat siap pasang kartu.
+  kecuali suatu saat siap pasang kartu.
 - Mitigasi: Railway punya fitur **Serverless** (tidur otomatis setelah 5
-  menit tanpa trafik) tapi **harus diaktifkan manual** -- beda dari Render
-  yang tidur otomatis by default. Ada task khusus mengaktifkannya di bawah.
+  menit tanpa trafik) tapi **harus diaktifkan manual** — beda dari Render
+  yang tidur otomatis by default. Ada task khusus mengaktifkannya di §5.4.
   Dengan ini aktif, biaya idle mendekati nol, cuma kena kredit saat benar-
   benar dipakai (uji coba, demo).
-- Pemilihan region **belum pasti tersedia untuk akun trial/free** -- ada
-  laporan komunitas (walau agak lama) bahwa pemilihan region pernah dibatasi
-  untuk plan berbayar. Task pertama di §5.3 sengaja menyuruh cek ini di
-  awal, bukan di akhir, supaya kalau ternyata terkunci, ketahuan sebelum
-  banyak langkah lain dikerjakan sia-sia.
+- Pemilihan region **belum pasti tersedia untuk akun trial/free** — ada
+  laporan komunitas (walau agak lama) bahwa pemilihan region pernah
+  dibatasi untuk plan berbayar. Task pertama di §5.3 sengaja menyuruh cek
+  ini di awal, bukan di akhir, supaya kalau ternyata terkunci, ketahuan
+  sebelum banyak langkah lain dikerjakan sia-sia.
 - Wake-up dari tidur (Serverless) bisa memunculkan **1x respons 502** di
-  request pertama sebelum berhasil, beda dari Render yang cuma lambat tanpa
-  error. UI mobile kita belum menangani retry otomatis untuk ini -- kalau
-  kejadian, coba lagi manual (refresh/re-share).
+  request pertama sebelum berhasil, beda dari Render yang cuma lambat
+  tanpa error. UI mobile kita belum menangani retry otomatis untuk ini —
+  kalau kejadian, coba lagi manual (refresh/re-share).
 
-**Fakta repo yang membentuk task di bawah** (dicek 2026-09-21, diperbarui 2026-09-22):
+**4. Amandemen 2026-09-23 — akun Railway baru, repo dijadikan public.**
+
+Akun Railway pertama kepakai trial-nya sia-sia (sempat dicoba dari sesi
+lain, belum sampai deploy). Solusinya:
+- Buat akun Railway baru (trial $5/30-hari reset).
+- Repo GitHub diubah jadi **public** supaya gampang di-connect ke akun
+  baru. Ini aman dari sisi secret — `.env` sudah terverifikasi tidak
+  pernah ter-track sejak §5.1, jadi tidak ada yang "bocor" cuma karena
+  repo terbuka.
+
+Bug nyata ketemu & sudah di-fix saat ini juga — detailnya ada di catatan
+task "Set Root Directory ke `backend`" di §5.3.
+
+#### Fakta repo yang membentuk task di §5.0–5.7
+
 - Python lokal **3.14** → Dockerfile memakai image `python:3.14-slim` supaya
   versinya sama persis dengan yang sudah teruji.
 - `DATABASE_URL` memakai **Supavisor session pooler**, bukan koneksi direct.
-  Ini penting: koneksi *direct* Supabase (`db.<ref>.supabase.co`) hanya IPv6,
-  dan kebanyakan PaaS gratis (termasuk Railway) tidak mendukung IPv6 keluar.
-  Project baru di Singapore juga wajib pakai pooler (host-nya berubah dari
-  `aws-0-ap-southeast-2...` jadi `aws-0-ap-southeast-1...` — dengan **-1**
-  bukan **-2**, gampang tersalah-baca).
-- Folder `FETCH/` sudah jadi git repo dan sudah di-push ke GitHub (lihat §5.1).
-- Dev dan production akan tetap memakai **satu database Supabase yang sama**
-  (yang baru, Singapore) — bukan DB production terpisah.
+  Ini penting: koneksi *direct* Supabase (`db.<ref>.supabase.co`) hanya
+  IPv6, dan kebanyakan PaaS gratis (termasuk Railway) tidak mendukung IPv6
+  keluar. Project Singapore juga wajib pakai pooler (host-nya
+  `aws-0-ap-southeast-1...` — dengan **-1** bukan **-2** yang Sydney,
+  gampang tersalah-baca).
+- Folder `FETCH/` sudah jadi git repo dan sudah di-push ke GitHub (§5.1).
+- Dev dan production tetap memakai **satu database Supabase yang sama**
+  (Singapore) — bukan DB production terpisah.
 - Kuota Gemini gratis (20 request/hari/model untuk klasifikasi) **dipakai
   bersama** oleh laptop dan server karena API key-nya sama.
 
@@ -754,9 +772,10 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
 
         COPY . .
 
-        # Host (Render/Railway/dll) memberi port lewat env var PORT. Satu worker
-        # saja: pool koneksi Supavisor free tier terbatas, dan BackgroundTasks
-        # berjalan in-process.
+        # Railway otomatis inject env var PORT dan app WAJIB listen di
+        # 0.0.0.0:$PORT (dikonfirmasi di docs.railway.com/variables/reference).
+        # Satu worker saja: pool koneksi Supavisor free tier terbatas, dan
+        # BackgroundTasks berjalan in-process.
         CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
         ```
       - Hasil: file ada di `backend/Dockerfile` (tanpa ekstensi).
@@ -789,29 +808,49 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
 
 ### 5.3 Railway: akun, service, environment variables
 
-- [ ] **Buat akun Railway & cek TIDAK diminta kartu kredit**
+**Amandemen (2026-09-23) — akun Railway baru (trial di-reset), repo dijadikan
+public.** Akun Railway pertama sudah kepakai trial-nya sia-sia (dicoba dari
+sesi lain sebelum sempat sampai deploy). User buat akun baru + repo GitHub
+diubah jadi **public** (tidak masalah dari sisi secret -- `.env` sudah
+terverifikasi tidak pernah ter-track sejak Fase 5.1, jadi tidak ada yang
+"bocor" cuma karena repo terbuka).
+
+**Bug nyata ketemu & sudah di-fix (2026-09-23):** deploy pertama gagal.
+
+- **Gejala:** log build berhenti dengan `Script start.sh not found`, lalu
+  `Railpack could not determine how to build the app`.
+- **Sebab:** Railway (builder-nya bernama **Railpack**) baca **root repo**,
+  bukan folder `backend/` — cuma melihat folder `backend/`/`docs/`/`mobile/`
+  tanpa tahu cara build-nya, karena task **"Set Root Directory ke backend"**
+  di bawah belum dikerjakan waktu deploy pertama otomatis terpicu begitu
+  repo di-connect.
+- **Fix:** isi Root Directory dengan `backend` → Railway ketemu
+  `backend/Dockerfile` dan build lewat situ.
+- **Pelajaran:** kalau urutannya connect repo dulu baru atur Root Directory
+  belakangan (urutan yang wajar dilakukan orang), deploy pertama **hampir
+  pasti gagal** duluan. Itu normal, bukan tanda ada yang salah secara
+  fundamental — tinggal redeploy setelah setting-nya benar.
+
+- [x] **Buat akun Railway & cek TIDAK diminta kartu kredit**
       — concepts: deployment-hosting
-      - Langkah: railway.com → Login/Start a New Project → **Login with
-        GitHub** (supaya Railway bisa membaca repo privatmu).
-      - Hasil: masuk ke dashboard Railway **tanpa** diminta nomor kartu di
-        mana pun selama alur ini. Kalau ternyata diminta juga (kebijakan
-        bisa beda per akun): berhenti, jangan isi, dan kabari dulu sebelum
-        lanjut -- berarti perlu dicari opsi lain lagi.
-- [ ] **Buat project baru dari repo GitHub**
+      - Hasil: akun baru dibuat, tidak diminta kartu.
+- [x] **Buat project baru dari repo GitHub (public)**
       — concepts: deployment-hosting
-      - Langkah: New Project → **Deploy from GitHub repo** → pilih repo
-        `fetch` (kalau tidak muncul: "Configure GitHub App" → beri akses ke
-        repo itu).
-      - Hasil: satu service baru muncul di project, awalnya kemungkinan
-        gagal build (belum dikonfigurasi) -- itu normal, lanjut ke task
-        berikutnya dulu, jangan panik lihat error di titik ini.
-- [ ] **Set Root Directory ke `backend`**
+      - Hasil: service ter-connect ke repo `fetch`.
+- [x] **Set Root Directory ke `backend`**
       — concepts: deployment-hosting
-      - Langkah: klik service → **Settings** → bagian **Source** → Root
-        Directory: isi `backend`.
-      - Hasil: field tersimpan. Ini yang membuat Railway membaca
-        `backend/Dockerfile` sebagai root build-nya, bukan root repo (repo
-        kita monorepo: `backend/` + `mobile/` + `docs/`).
+      - Hasil: field tersimpan -- ini yang memperbaiki error Railpack di atas.
+- [ ] **Verifikasi build sukses setelah fix Root Directory**
+      — concepts: deployment-hosting
+      - Langkah: buka tab **Deployments** → deployment terbaru (atau trigger
+        **Redeploy** kalau belum otomatis jalan ulang setelah ganti setting)
+        → tunggu, baca log build.
+      - Hasil: log build kali ini menyebut `Dockerfile` (bukan Railpack
+        auto-detect lagi), diakhiri `Uvicorn running on http://0.0.0.0:...`,
+        status deployment jadi **Success**/**Active**.
+      - Kalau masih gagal dan log **tidak** menyebut Dockerfile sama sekali:
+        buka Settings → bagian **Build** → cari opsi pilih builder secara
+        eksplisit → pilih **Dockerfile** (jangan biarkan "Automatic").
 - [ ] **Cek & pilih region Singapore — lakukan ini SEKARANG, bukan belakangan**
       — concepts: deployment-hosting
       - Langkah: Settings → bagian **Region** (atau saat konfigurasi
@@ -857,25 +896,25 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
         bisa diakses dari luar sama sekali.
       - Hasil: muncul URL berbentuk `https://<nama-acak>.up.railway.app`.
         Catat URL ini, dipakai di semua task setelah ini.
-- [ ] **Set health check path**
-      - Langkah: Settings → **Deploy** → Healthcheck Path: `/health`.
+- [x] **Set health check path**
+      - Langkah: buka **Settings** service → cari field **Healthcheck Path**
+        (dokumentasi resmi Railway cuma bilang "di halaman service settings",
+        tidak menyebut nama sub-tab pastinya — kemungkinan besar ada di
+        bagian **Deploy**, tapi kalau tidak ketemu di situ, scroll/cari
+        seluruh halaman Settings) → isi `/health`.
       - Kenapa: Railway baru mengalihkan trafik ke versi baru setelah
         `/health` menjawab 200 — deploy yang rusak tidak menggantikan yang
         sehat. Default timeout 300 detik, cukup untuk build kita.
 
 ### 5.4 Deploy & verifikasi server
 
-- [ ] **Deploy pertama sampai status "Live"**
-      — concepts: deployment-hosting
-      - Langkah: Create Web Service / Deploy → buka tab **Logs**, tunggu
-        (build pertama beberapa menit: install requirements termasuk yt-dlp).
-      - Hasil: log berakhir dengan `Uvicorn running on http://0.0.0.0:...`
-        dan status service **Live**.
-      - Kalau gagal: baca baris error pertama di log build.
-        `ERROR: No matching distribution found for <paket>` → paket itu belum
-        punya versi untuk Python 3.14 Linux; catat nama paketnya.
-        `KeyError: 'GEMINI_API_KEY'` / `JWT_SECRET_KEY` → env var belum diisi
-        atau salah nama.
+*(Build & deploy pertama sudah diverifikasi di task "Verifikasi build sukses
+setelah fix Root Directory" di §5.3 — kalau paket lain (bukan Root Directory)
+yang bikin build gagal: `ERROR: No matching distribution found for <paket>`
+→ paket itu belum punya versi untuk Python 3.14 Linux, catat namanya;
+`KeyError: 'GEMINI_API_KEY'`/`JWT_SECRET_KEY` → env var belum diisi/salah
+nama, balik ke task "Isi environment variables di Railway" di §5.3.)*
+
 - [ ] **Verifikasi `/health` dari URL publik**
       — concepts: deployment-hosting
       - Langkah (Git Bash): `curl -i https://<domain-railway>/health`
@@ -899,7 +938,10 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
         ```
       - Hasil: JSON berisi `"access_token":"eyJ..."`. Salin nilai token itu
         (tanpa kutip) untuk task-task berikut.
-      - Kalau `500`: buka Logs Railway (tab **Deployments** → klik deployment aktif → **View Logs**) — biasanya `DATABASE_URL` salah.
+      - Kalau `500`: klik deployment yang aktif di halaman service (panel
+        log runtime terbuka otomatis di situ — bukan tombol "View Logs"
+        terpisah; kalau butuh log waktu build, bukan runtime, klik tab
+        **Build Logs** di panel yang sama) — biasanya `DATABASE_URL` salah.
 - [ ] **Uji daftar item production**
       - Langkah: `curl -s https://<domain-railway>/items -H "Authorization: Bearer <token>"`
       - Hasil: JSON array berisi item-item akun uji (Rendang, Deadlift, dst.) —
@@ -920,13 +962,13 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
           -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
           -d '{"url":"https://en.wikipedia.org/wiki/Gado-gado"}'
         ```
-        Tunggu ± 15 detik, lalu buka Logs Railway.
+        Tunggu ± 15 detik, lalu buka panel log deployment aktif (lihat cara di task login production tadi).
       - Hasil: log berisi `enrichment - item ... diperkaya: platform=generic ... ai=True embedding=True`.
       - Kalau `ai=False` dengan `429` di log: kuota harian Gemini habis
         (dipakai bersama dengan laptop). Bukan bug deploy — coba lagi besok.
 - [ ] **Uji ekstraksi YouTube dari server**
       - Langkah: ulangi task sebelumnya dengan URL
-        `https://www.youtube.com/watch?v=jNQXAC9IVRw`, lalu cek log.
+        `https://www.youtube.com/watch?v=jNQXAC9IVRw`, lalu cek panel log yang sama.
       - Hasil yang mungkin — **catat mana yang terjadi**:
         - `sources=['yt_dlp']` → yt-dlp jalan normal dari server.
         - `sources=['open_graph']` + baris `yt-dlp gagal ... Sign in to confirm you're not a bot`
