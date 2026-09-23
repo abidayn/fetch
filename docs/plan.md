@@ -915,12 +915,17 @@ yang bikin build gagal: `ERROR: No matching distribution found for <paket>`
 `KeyError: 'GEMINI_API_KEY'`/`JWT_SECRET_KEY` → env var belum diisi/salah
 nama, balik ke task "Isi environment variables di Railway" di §5.3.)*
 
-- [ ] **Verifikasi `/health` dari URL publik**
+- [x] **Verifikasi `/health` dari URL publik**
       — concepts: deployment-hosting
       - Langkah (Git Bash): `curl -i https://<domain-railway>/health`
       - Hasil: `HTTP/2 200` dan body `{"status":"ok"}`. Buka juga URL yang
         sama di browser HP (pakai data seluler, bukan WiFi rumah) — harus
         tampil teks yang sama.
+      - **Hasil sungguhan (2026-09-23):** `https://fetch-production-35a4.up.railway.app/health`
+        → `200 OK`, `{"status":"ok"}`, 0.43s. Header response `x-railway-edge: sin1`
+        dan `x-hikari-trace: sin1.hs0s` mengindikasikan server jalan di
+        **Singapore** — region trial ternyata tersedia. Belum dicek dari
+        browser HP secara langsung, cuma dari curl laptop.
 - [x] **Verifikasi migrasi database = head**
       — concepts: orm-migrations
       - Konteks: karena production memakai DB yang sama dengan dev, migrasi
@@ -929,7 +934,7 @@ nama, balik ke task "Isi environment variables di Railway" di §5.3.)*
       - Hasil: mencetak `66de89f6cd67 (head)`.
       - Kalau hasilnya revisi lain / kosong: `venv/Scripts/python.exe -m alembic upgrade head`,
         lalu cek ulang.
-- [ ] **Uji login production dengan curl**
+- [x] **Uji login production dengan curl**
       - Langkah (Git Bash), pakai akun uji yang sudah ada:
         ```bash
         curl -s -X POST https://<domain-railway>/auth/login \
@@ -942,11 +947,15 @@ nama, balik ke task "Isi environment variables di Railway" di §5.3.)*
         log runtime terbuka otomatis di situ — bukan tombol "View Logs"
         terpisah; kalau butuh log waktu build, bukan runtime, klik tab
         **Build Logs** di panel yang sama) — biasanya `DATABASE_URL` salah.
-- [ ] **Uji daftar item production**
+      - **Hasil sungguhan (2026-09-23):** token diterima normal.
+- [x] **Uji daftar item production**
       - Langkah: `curl -s https://<domain-railway>/items -H "Authorization: Bearer <token>"`
       - Hasil: JSON array berisi item-item akun uji (Rendang, Deadlift, dst.) —
         bukti server membaca database yang sama.
-- [ ] **Uji pencarian semantik production**
+      - **Hasil sungguhan (2026-09-23):** array item akun `rag-test` tampil
+        lengkap (Sourdough, dst.) — server production baca DB Singapore yang
+        sama dengan dev.
+- [x] **Uji pencarian semantik production**
       - Langkah:
         ```bash
         curl -s -w "\n%{time_total}s\n" -X POST https://<domain-railway>/search \
@@ -955,7 +964,10 @@ nama, balik ke task "Isi environment variables di Railway" di §5.3.)*
         ```
       - Hasil: hasil pertama *Deadlift*. Angka di baris terakhir = latensi
         production pertamamu (di laptop: ± 2 detik) — catat.
-- [ ] **Uji simpan + pengayaan AI di server**
+      - **Hasil sungguhan (2026-09-23):** hasil pertama Deadlift (score
+        0.7138), lalu HIIT (0.6705) — identik dengan hasil uji lokal.
+        Latensi 0.77s (dari koneksi laptop saat ini, bukan dari HP).
+- [x] **Uji simpan + pengayaan AI di server**
       - Langkah:
         ```bash
         curl -s -X POST https://<domain-railway>/items \
@@ -966,7 +978,12 @@ nama, balik ke task "Isi environment variables di Railway" di §5.3.)*
       - Hasil: log berisi `enrichment - item ... diperkaya: platform=generic ... ai=True embedding=True`.
       - Kalau `ai=False` dengan `429` di log: kuota harian Gemini habis
         (dipakai bersama dengan laptop). Bukan bug deploy — coba lagi besok.
-- [ ] **Uji ekstraksi YouTube dari server**
+      - **Hasil sungguhan (2026-09-23):** item Gado-gado, `processed: true`,
+        title "Gado-gado - Wikipedia", ringkasan Bahasa Indonesia lengkap,
+        kategori "Food & Cooking". Ekstraksi + Gemini + embedding semua
+        jalan penuh di production (diverifikasi lewat `GET /items/{id}`,
+        bukan lewat log dashboard — hasilnya setara).
+- [x] **Uji ekstraksi YouTube dari server**
       - Langkah: ulangi task sebelumnya dengan URL
         `https://www.youtube.com/watch?v=jNQXAC9IVRw`, lalu cek panel log yang sama.
       - Hasil yang mungkin — **catat mana yang terjadi**:
@@ -976,6 +993,15 @@ nama, balik ke task "Isi environment variables di Railway" di §5.3.)*
           tetap tersimpan dengan judul + deskripsi dari Open Graph
           (graceful degradation bekerja sesuai desain), hanya lebih tipis.
           Catat sebagai keterbatasan production, bukan kegagalan task.
+      - **Hasil sungguhan (2026-09-23):** kasus kedua yang terjadi —
+        `title: "YouTube"`, ringkasan generik soal platform-nya ("Platform
+        tempat pengguna dapat menikmati video dan musik..."), bukan tentang
+        video "Me at the zoo" itu sendiri. Ciri khas yt-dlp diblokir IP
+        Railway lalu jatuh ke Open Graph generik. `processed: true`, item
+        tetap tersimpan dan bisa dicari — graceful degradation bekerja
+        sesuai desain. Belum sempat cek log dashboard langsung untuk
+        konfirmasi baris `yt-dlp gagal` persis, tapi datanya konsisten
+        dengan skenario itu.
 - [ ] **Aktifkan fitur Serverless (tidur otomatis)**
       - Langkah: Settings service → cari bagian **Serverless** → aktifkan.
       - Kenapa wajib, bukan opsional: beda dari Render, di Railway ini
@@ -1018,7 +1044,7 @@ nama, balik ke task "Isi environment variables di Railway" di §5.3.)*
 - [x] **Commit perubahan base URL**
       - Langkah: `git add mobile/lib/api/api_client.dart` →
         `git commit -m "Configurable API base URL via dart-define"` → `git push`
-- [ ] **Build release APK dengan URL production**
+- [x] **Build release APK dengan URL production**
       - Langkah (di `mobile/`, Git Bash):
         `/c/flutter/bin/flutter build apk --release --dart-define=API_BASE_URL=https://<domain-railway>`
         (tanpa garis miring `/` di akhir URL — kode menambahkan `/items` dst.
@@ -1027,6 +1053,19 @@ nama, balik ke task "Isi environment variables di Railway" di §5.3.)*
       - Catatan: APK ini ditandatangani dengan **debug key** (setting bawaan
         di `android/app/build.gradle.kts`). Cukup untuk sideload ke HP sendiri;
         baru jadi masalah kalau suatu hari mau ke Play Store.
+      - **Bug lingkungan ketemu (2026-09-23, bukan bug kode):** percobaan
+        pertama gagal — `An Application Control policy has blocked this
+        file` waktu menjalankan `gen_snapshot.EXE` (compiler AOT Flutter
+        untuk target arm64 release). Ini kebijakan Windows di laptop, bukan
+        error Dart/Flutter. Kemungkinan besar karena ini **pertama kalinya**
+        target `--release` dijalankan di laptop ini (semua build sebelumnya
+        di proyek ini `--debug`, lewat jalur compiler berbeda). Percobaan
+        kedua (tanpa perubahan apa pun) **berhasil** — sepertinya Windows
+        Defender masih scan file itu di percobaan pertama. Kalau ini
+        terulang lagi nanti: coba ulang 1-2x dulu sebelum curiga ada yang
+        salah beneran.
+      - **Hasil sungguhan (2026-09-23):** `app-release.apk`, 48.0MB, build
+        ke-2 sukses, dengan `API_BASE_URL=https://fetch-production-35a4.up.railway.app`.
 
 ### 5.6 Install ke HP fisik (Infinix)
 
