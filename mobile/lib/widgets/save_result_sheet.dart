@@ -105,8 +105,17 @@ class _SaveResultSheetState extends State<_SaveResultSheet> {
           ]),
         ),
       );
+    } else if (_item.hasContent) {
+      // Isi link terbaca, tapi Gemini gagal (kuota/timeout). Bisa diulang
+      // di backend (backfill_enrichment.py) -- beda dari link tak terbaca.
+      heading = 'Saved';
+      body = Text(
+        "Saved, but the AI summary didn't come through this time. "
+        'You can add a title and summary yourself via Edit.',
+        style: theme.textTheme.bodyMedium,
+      );
     } else {
-      // Sudah diproses tapi kontennya tidak terbaca (mis. Instagram tanpa login).
+      // Sudah diproses tapi kontennya tidak terbaca (post privat/terhapus, dll).
       heading = 'Saved';
       body = Text(
         "Couldn't read much from this link, so it's saved as-is.",
