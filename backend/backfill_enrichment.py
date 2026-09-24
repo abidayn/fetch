@@ -7,14 +7,24 @@ Menangkap dua kasus (lihat "NULL = antrian kerja" di docs/data-model.md):
 - summary IS NULL AND raw_content != ''    -> punya isi, tapi Gemini gagal
   (mis. 503 yang tetap gagal setelah retry)
 
-Item dengan raw_content == '' (memang tidak ada isi, contoh Instagram tanpa
-login) sengaja TIDAK diulang -- hasilnya akan tetap kosong.
+Item dengan raw_content == '' (memang tidak ada isi, contoh post privat)
+sengaja TIDAK diulang -- hasilnya akan tetap kosong.
+
+--ids : proses ulang item tertentu DARI NOL, apa pun statusnya. Untuk item
+        yang "berhasil" tapi isinya salah -- mis. ringkasan tentang YouTube
+        generik karena ekstraksi dulu diblokir -- atau raw_content == '' yang
+        sekarang bisa dibaca setelah extraction.py diperbaiki. Title, summary,
+        dan kategori ikut dihapus dulu (termasuk editan user, kalau ada):
+        tanpa itu, kalau Gemini gagal lagi, nilai lama yang salah tetap tinggal.
 
 Usage:
     venv/Scripts/python.exe backfill_enrichment.py
+    venv/Scripts/python.exe backfill_enrichment.py --ids <uuid> [<uuid> ...]
 """
 
 import logging
+import sys
+import uuid
 
 from sqlalchemy import and_, or_, select
 
@@ -38,7 +48,28 @@ def pending_ids():
         ).all()
 
 
+def reprocess(ids: list[uuid.UUID]):
+    for i, item_id in enumerate(ids, 1):
+        with SessionLocal() as db:
+            item = db.get(SavedItem, item_id)
+            if item is None:
+                print(f"[{i}/{len(ids)}] {item_id} tidak ditemukan, dilewati")
+                continue
+            item.raw_content = item.title = item.summary = item.category = None
+            item.embedding = None
+            db.commit()
+        print(f"[{i}/{len(ids)}] {item_id}")
+        enrich_item(item_id)
+        with SessionLocal() as db:
+            item = db.get(SavedItem, item_id)
+            print(f"    -> title={item.title!r} category={item.category!r} ada_isi={item.has_content}")
+
+
 def main():
+    if "--ids" in sys.argv:
+        reprocess([uuid.UUID(a) for a in sys.argv[sys.argv.index("--ids") + 1 :]])
+        return
+
     ids = pending_ids()
     print(f"{len(ids)} item perlu diproses")
     for i, item_id in enumerate(ids, 1):

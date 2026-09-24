@@ -85,6 +85,7 @@ class ItemPublic(BaseModel):
     summary: str | None
     category: str | None
     processed: bool  # False = pengayaan belum selesai (UI tampilkan "memproses")
+    has_content: bool  # False = isi link tidak terbaca (lihat SavedItem.has_content)
     created_at: datetime
 
 

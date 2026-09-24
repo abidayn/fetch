@@ -72,6 +72,13 @@ class SavedItem(Base):
         """raw_content NULL = belum diproses; "" atau berisi = sudah (enrichment.py)."""
         return self.raw_content is not None
 
+    @property
+    def has_content(self) -> bool:
+        """Ekstraksi berhasil membaca isi link. Membedakan dua kasus "sudah
+        diproses tapi tanpa ringkasan": link tidak terbaca (False) vs Gemini
+        gagal padahal isinya ada (True, bisa diulang lewat backfill)."""
+        return bool(self.raw_content)
+
     __table_args__ = (
         Index("idx_saved_items_user_id", "user_id"),
         # HNSW = index approximate nearest neighbor untuk pencarian vektor.

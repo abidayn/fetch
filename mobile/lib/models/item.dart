@@ -13,6 +13,10 @@ class Item {
   /// False selama backend masih mengekstrak metadata + memanggil Gemini
   /// (jalan di background setelah POST /items, lihat backend/enrichment.py).
   final bool processed;
+
+  /// False = backend tidak bisa membaca isi link sama sekali. Membedakan
+  /// "link tidak terbaca" dari "AI gagal merangkum" saat [summary] null.
+  final bool hasContent;
   final DateTime createdAt;
 
   Item({
@@ -23,6 +27,7 @@ class Item {
     this.summary,
     this.category,
     required this.processed,
+    required this.hasContent,
     required this.createdAt,
   });
 
@@ -34,6 +39,9 @@ class Item {
         summary: json['summary'] as String?,
         category: json['category'] as String?,
         processed: json['processed'] as bool? ?? true,
+        // Default false: backend lama (belum punya field ini) tetap
+        // menampilkan pesan "tidak terbaca" seperti sebelumnya.
+        hasContent: json['has_content'] as bool? ?? false,
         createdAt: DateTime.parse(json['created_at'] as String),
       );
 

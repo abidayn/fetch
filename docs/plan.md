@@ -465,37 +465,23 @@ task "Set Root Directory ke `backend`" di §5.3.
 
 #### Fakta repo yang membentuk task di §5.0–5.7
 
-**Dipilih: Render, region Singapore, lewat Docker.**
+**Dipilih: Railway, region Singapore, lewat Docker** (bukan Render — Render
+cuma rencana awal, batal karena minta kartu kredit; lihat poin 3 riwayat di
+atas). Database Supabase juga di Singapore (poin 2), dan task migrasinya di
+§5.0 sengaja **sebelum** §5.1: environment variable Railway (§5.3) butuh
+nilai `DATABASE_URL` yang sudah final, supaya tidak perlu deploy dua kali.
 
-**Amandemen (2026-09-22) — DB juga dipindah ke Singapore, sebelum deploy.**
-Catatan di atas awalnya menerima ± 90–100 ms/query Render(Singapore)↔DB(Sydney)
-sebagai "cukup baik". Setelah dianalisis ulang, itu ongkos yang salah untuk
-diterima secara permanen: latensi itu bukan cuma soal `/search` (yang memang
-didominasi panggilan Gemini 0,5–20 detik, jadi 90 ms tidak terasa) — ia juga
-kena ke **setiap** `POST /items` (simpan awal), `GET /items`, `DELETE`, dan
-login, yaitu operasi yang murni DB tanpa AI dan terjadi berkali-kali di setiap
-sesi. Menerimanya berarti membayar pajak itu selamanya di setiap ketukan.
-
-Karena project Supabase sekarang cuma berisi data uji (~25–30 baris, akun
-`rag-test` + beberapa item manual — tidak ada user asli), biaya pindah hari
-ini nyaris nol. Menunda pindah sampai ada data user sungguhan akan jauh lebih
-berisiko. Maka: **buat project Supabase baru di `ap-southeast-1` (Singapore),
-migrasi data, lalu deploy ke Render langsung dengan `DATABASE_URL` Singapore**
-— supaya tidak perlu deploy dua kali. Task-nya di §5.0 di bawah, **sebelum**
-§5.1, karena tidak bergantung pada git dan environment variable Render (§5.3)
-butuh nilai `DATABASE_URL` yang sudah final.
-
-Efek samping yang perlu diketahui, di luar soal region: project Supabase
-gratis **otomatis pause setelah 1 minggu tidak dipakai** (beda dari, dan di
-luar, soal tidurnya Render setelah 15 menit idle). Kalau app tidak disentuh
-seminggu, siap-siap ada dua lapis "bangun tidur", bukan cuma satu.
+Ada dua lapis "bangun tidur" yang terpisah: service Railway tidur setelah
+± 5 menit tanpa trafik (Serverless, §5.4), dan project Supabase gratis
+**otomatis pause setelah 1 minggu tidak dipakai**.
 
 **Fakta repo yang membentuk task di bawah** (dicek 2026-09-21, diperbarui 2026-09-22):
 - Python lokal **3.14** → Dockerfile memakai image `python:3.14-slim` supaya
   versinya sama persis dengan yang sudah teruji.
 - `DATABASE_URL` memakai **Supavisor session pooler**, bukan koneksi direct.
   Ini penting: koneksi *direct* Supabase (`db.<ref>.supabase.co`) hanya IPv6,
-  dan Render tidak mendukung IPv6 keluar. Project baru di Singapore juga wajib
+  dan host deploy belum tentu bisa IPv6 keluar; pooler bisa lewat IPv4 dan
+  terbukti jalan dari Railway (§5.4/5.5). Project baru di Singapore juga wajib
   pakai pooler (host-nya akan berubah dari `aws-0-ap-southeast-2...` jadi
   `aws-0-ap-southeast-1...` — dengan **-1** bukan **-2**, gampang tersalah-baca).
 - Folder `FETCH/` sudah jadi git repo dan sudah di-push ke GitHub (lihat §5.1).
@@ -825,11 +811,10 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
       - Langkah (di `FETCH/`): `git add backend/Dockerfile backend/.dockerignore`
         → `git commit -m "Add Dockerfile for deploy"` → `git push`
       - Hasil: kedua file terlihat di GitHub.
-      - Catatan: kalau kamu sudah pernah commit ini lebih dulu dengan pesan
-        yang menyebut "Render" (sebelum amandemen pivot ke Railway) -- tidak
-        apa-apa, Dockerfile-nya sendiri host-agnostic (cuma baca env var
-        `PORT`, tidak spesifik Render). Tidak perlu commit ulang cuma buat
-        ganti nama di pesan commit lama.
+      - Catatan: commit `6339122` punya pesan "dockerfile for render deploy"
+        (dibuat sebelum pivot ke Railway). Pesannya saja yang usang --
+        Dockerfile-nya host-agnostic (cuma baca env var `PORT`) dan dipakai
+        apa adanya oleh Railway. Riwayat git sengaja tidak ditulis ulang.
 
 ### 5.3 Railway: akun, service, environment variables
 
@@ -911,13 +896,13 @@ terverifikasi tidak pernah ter-track sejak Fase 5.1, jadi tidak ada yang
         diisi di dashboard, **bukan** di file mana pun di repo.
       - Hasil: tiga env var tersimpan. Railway menandainya sebagai
         "staged changes" -- klik **Deploy** di pojok untuk menerapkannya
-        (jangan lupa, beda dari Render yang langsung apply).
+        (jangan lupa -- env var belum berlaku sebelum di-deploy).
 - [ ] **Generate domain publik**
       — concepts: deployment-hosting
       - Langkah: Settings → **Networking** → **Public Networking** → klik
         **Generate Domain**.
-      - Kenapa task terpisah: **beda dari Render, Railway TIDAK otomatis
-        kasih URL publik** -- tanpa langkah ini service jalan tapi tidak
+      - Kenapa task terpisah: **Railway TIDAK otomatis kasih URL
+        publik** -- tanpa langkah ini service jalan tapi tidak
         bisa diakses dari luar sama sekali.
       - Hasil: muncul URL berbentuk `https://<nama-acak>.up.railway.app`.
         Catat URL ini, dipakai di semua task setelah ini.
@@ -1029,17 +1014,17 @@ nama, balik ke task "Isi environment variables di Railway" di §5.3.)*
         dengan skenario itu.
 - [ ] **Aktifkan fitur Serverless (tidur otomatis)**
       - Langkah: Settings service → cari bagian **Serverless** → aktifkan.
-      - Kenapa wajib, bukan opsional: beda dari Render, di Railway ini
-        **mati by default**. Tanpa ini, service menyala 24/7 dan menghabiskan
+      - Kenapa wajib, bukan opsional: di Railway fitur ini **mati by
+        default**. Tanpa ini, service menyala 24/7 dan menghabiskan
         kredit trial/bulanan jauh lebih cepat (lihat amandemen di atas,
         estimasi ± $3/bulan kalau menyala terus tanpa fitur ini).
       - Hasil: ada indikator "Serverless enabled" di dashboard.
 - [ ] **Uji perilaku cold start (service tidur)**
       - Langkah: jangan sentuh server ≥ 10 menit (Railway tidur setelah ±5
-        menit tanpa trafik keluar-masuk, beda dari Render yang 15 menit).
+        menit tanpa trafik keluar-masuk).
         Lalu jalankan `curl -i -w "\n%{time_total}s\n" https://<domain-railway>/health`.
       - Hasil yang mungkin — **catat mana yang terjadi**:
-        - Langsung `200` setelah beberapa detik jeda (mirip pengalaman Render).
+        - Langsung `200` setelah beberapa detik jeda.
         - **Satu kali `502`**, lalu `curl` yang sama diulang langsung `200`.
           Ini perilaku terdokumentasi Railway (request pertama ke service
           yang tidur kadang gagal sekali sebelum instance-nya benar-benar
@@ -1258,3 +1243,23 @@ sini biar Fase 4 fokus RAG dasar dulu.*
       server production yang lama belum punya ketiganya (edit & filter
       kategori di app akan gagal sampai backend ter-deploy). Tidak ada
       migrasi DB.
+
+### Rilis APK ke beta tester (CI/CD)
+
+*APK dibangun GitHub Actions (`.github/workflows/android-release.yml`) dan
+diterbitkan ke GitHub Releases. Tester unduh dari
+`https://github.com/abidayn/fetch/releases/latest/download/app-release.apk`.*
+
+- [x] Release keystore dibuat (2026-09-24) di luar repo:
+      `C:\Users\Acer\fetch-signing\` (`fetch-release.jks` + password).
+      Alias `fetch`, SHA-256 sertifikat diawali `2D:7A:3A:ED`. **Wajib
+      di-backup** -- kalau hilang, semua tester harus uninstall-install ulang.
+- [x] `build.gradle.kts`: pakai `android/app/release.jks` kalau ada (CI),
+      jatuh ke debug key kalau tidak (build lokal). Diuji lokal: APK
+      bertanda tangan kunci release.
+- [ ] Isi GitHub Secrets (`ANDROID_KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`,
+      `KEY_ALIAS`, `KEY_PASSWORD`) dan variable `API_BASE_URL`
+- [ ] Rilis pertama: `git tag v0.6.0` → `git push origin v0.6.0` → tab
+      Actions hijau → APK ada di Releases
+- Cara rilis berikutnya: merge ke `main`, deploy backend dulu kalau ada
+  perubahan API, lalu tag versi baru (`v0.6.1`, `v0.7.0`, ...).

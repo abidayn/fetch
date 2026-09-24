@@ -152,7 +152,7 @@ user to manually tag things later (which in practice never happens).
   embeddings for both stored items and incoming search queries.
 - **ORM / migrations** — SQLAlchemy models with Alembic-managed migrations,
   versioning the schema (including the vector column) as it evolves.
-- **Deployment** — backend deployed to a free-tier host (Render/Railway/Fly.io),
+- **Deployment** — backend deployed to a free-tier host (Railway, Singapore region, via Docker),
   secrets (Gemini API key, database credentials) managed via environment
   variables rather than being committed to source control. The mobile app is
   built and sideloaded directly to a device rather than published to the Play
@@ -199,7 +199,7 @@ user to manually tag things later (which in practice never happens).
 - **JWT over session auth**, driven by the client being a native mobile app
   rather than a browser.
 - **Free-tier-only infrastructure** as a hard constraint throughout — every
-  service choice (Supabase/Neon, Render/Railway/Fly, Gemini's free tier) was
+  service choice (Supabase, Railway, Gemini's free tier) was
   evaluated against this from the start rather than retrofitted later.
 
 ## Skills and competencies demonstrated
