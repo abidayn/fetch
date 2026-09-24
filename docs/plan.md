@@ -376,17 +376,94 @@ gagal**. Kerjakan berurutan — task belakang bergantung pada task depan.*
 (bukan PowerShell), dijalankan dari folder yang disebut di task. `<...>` =
 ganti dengan nilaimu sendiri (tanpa tanda `<>`).
 
-### Keputusan host (amandemen 2026-09-21)
+### Keputusan host — status saat ini + riwayat perubahan
 
-Catatan lama bilang backend "WAJIB di region yang sama dengan DB (Sydney)".
-Setelah dicek, itu tidak bisa dipenuhi dengan gratis dan sederhana:
+> **Status saat ini (2026-09-23):** host = **Railway**, region = **Singapore
+> kalau tersedia untuk plan trial/free** (dicek di task pertama §5.3 — belum
+> pasti, lihat catatan di situ), database = **Supabase Singapore**, repo
+> GitHub = **public**. Bagian di bawah ini riwayat kenapa sampai ke sini —
+> kalau cuma mau tahu status terkini, cukup baca kotak ini saja.
+
+#### Riwayat keputusan (urutan kronologis)
+
+**1. Keputusan awal (2026-09-21): Render, Singapore.**
+
+Perbandingan awal (kolom "Region DB" merujuk ke Sydney, lokasi DB waktu itu
+sebelum dipindah):
 
 | Opsi | Region DB kita (Sydney)? | Masalah |
 |---|---|---|
-| **Render (dipilih)** | Tidak ada — terdekat **Singapore** | Tidur setelah 15 menit idle, bangun ± 1 menit |
-| Google Cloud Run | Ada (`australia-southeast1`) | Butuh kartu kredit; CPU default hanya aktif *selama* request, padahal pengayaan AI kita jalan **setelah** response (`BackgroundTasks`) → bisa macet |
+| **Render (dipilih saat itu)** | Tidak ada — terdekat Singapore | Tidur setelah 15 menit idle, bangun ± 1 menit |
+| Google Cloud Run | Ada (`australia-southeast1`) | Butuh kartu kredit; CPU default cuma aktif *selama* request, padahal `BackgroundTasks` kita jalan **setelah** response → bisa macet |
 | Fly.io | Ada (`syd`) | Tidak ada free tier untuk akun baru |
-| Railway | Tidak ada Sydney | Hanya kredit trial |
+| Railway | Tidak ada Sydney | Waktu itu dikira "cuma kredit trial" — ternyata salah, ada plan Free permanen juga (lihat poin 3) |
+
+**2. Amandemen 2026-09-22 — database ikut dipindah ke Singapore.**
+
+Alasannya:
+- Rencana awal menerima ± 90–100 ms/query Render(Singapore)↔DB(Sydney)
+  sebagai "cukup baik" — tapi itu keliru untuk diterima permanen.
+- Latensi itu bukan cuma soal `/search` (yang memang didominasi panggilan
+  Gemini 0,5–20 detik, jadi 90 ms tidak terasa).
+- Latensi itu **juga kena ke setiap** `POST /items` (simpan awal),
+  `GET /items`, `DELETE`, dan login — operasi murni DB tanpa AI yang
+  terjadi berkali-kali di setiap sesi.
+- Menerimanya berarti membayar pajak itu selamanya di setiap ketukan.
+- Karena project Supabase waktu itu cuma berisi data uji (~25–30 baris,
+  tidak ada user asli), biaya pindah saat itu nyaris nol. Menunda sampai
+  ada data user sungguhan akan jauh lebih berisiko.
+
+Efek samping yang perlu diketahui, di luar soal region: project Supabase
+gratis **otomatis pause setelah 1 minggu tidak dipakai** — ini beda dari,
+dan di luar, soal tidurnya host backend. Kalau app tidak disentuh seminggu,
+ada dua lapis "bangun tidur" untuk diperhitungkan, bukan cuma satu.
+
+**3. Amandemen 2026-09-22 #2 — Render minta kartu kredit, pindah ke Railway.**
+
+Waktu benar-benar daftar, Render meminta kartu kredit di awal (bukan cuma
+"kalau kepakai lebih dari limit" seperti dugaan riset awal — kebijakan itu
+sepertinya berubah, atau berlaku beda per akun/region).
+
+Kabar baiknya: Railway juga punya region **Southeast Asia (Singapore)**
+(`asia-southeast1-eqsg3a`), jadi keputusan migrasi DB ke Singapore tetap
+relevan. Trial akun baru dapat kredit gratis $5 selama 30 hari, tanpa kartu
+kredit. Setelah itu, akun otomatis turun ke plan **Free: $1 kredit/bulan** —
+tetap tanpa kartu, tapi jauh lebih kecil dari asumsi lama soal Render.
+
+Konsekuensi jujur yang perlu diketahui, beda dari asumsi Render sebelumnya:
+- Estimasi kasar biaya kalau backend jalan 24/7 sebulan penuh (RAM+CPU
+  minimal): **± $3/bulan** — lebih besar dari jatah $1/bulan plan Free.
+  Artinya **tidak realistis dibiarkan menyala terus-menerus selamanya**
+  kecuali suatu saat siap pasang kartu.
+- Mitigasi: Railway punya fitur **Serverless** (tidur otomatis setelah 5
+  menit tanpa trafik) tapi **harus diaktifkan manual** — beda dari Render
+  yang tidur otomatis by default. Ada task khusus mengaktifkannya di §5.4.
+  Dengan ini aktif, biaya idle mendekati nol, cuma kena kredit saat benar-
+  benar dipakai (uji coba, demo).
+- Pemilihan region **belum pasti tersedia untuk akun trial/free** — ada
+  laporan komunitas (walau agak lama) bahwa pemilihan region pernah
+  dibatasi untuk plan berbayar. Task pertama di §5.3 sengaja menyuruh cek
+  ini di awal, bukan di akhir, supaya kalau ternyata terkunci, ketahuan
+  sebelum banyak langkah lain dikerjakan sia-sia.
+- Wake-up dari tidur (Serverless) bisa memunculkan **1x respons 502** di
+  request pertama sebelum berhasil, beda dari Render yang cuma lambat
+  tanpa error. UI mobile kita belum menangani retry otomatis untuk ini —
+  kalau kejadian, coba lagi manual (refresh/re-share).
+
+**4. Amandemen 2026-09-23 — akun Railway baru, repo dijadikan public.**
+
+Akun Railway pertama kepakai trial-nya sia-sia (sempat dicoba dari sesi
+lain, belum sampai deploy). Solusinya:
+- Buat akun Railway baru (trial $5/30-hari reset).
+- Repo GitHub diubah jadi **public** supaya gampang di-connect ke akun
+  baru. Ini aman dari sisi secret — `.env` sudah terverifikasi tidak
+  pernah ter-track sejak §5.1, jadi tidak ada yang "bocor" cuma karena
+  repo terbuka.
+
+Bug nyata ketemu & sudah di-fix saat ini juga — detailnya ada di catatan
+task "Set Root Directory ke `backend`" di §5.3.
+
+#### Fakta repo yang membentuk task di §5.0–5.7
 
 **Dipilih: Render, region Singapore, lewat Docker.**
 
@@ -432,7 +509,7 @@ seminggu, siap-siap ada dua lapis "bangun tidur", bukan cuma satu.
 ### 5.0 Migrasi database: Supabase Sydney → Singapore
 
 *Dikerjakan sebelum §5.1 supaya `DATABASE_URL` yang dipakai di git commit/env
-Render (§5.3) sudah final, tidak perlu diganti dua kali.*
+Railway (§5.3) sudah final, tidak perlu diganti dua kali.*
 
 - [x] **Buat project Supabase baru di region Singapore**
       — concepts: deployment-hosting
@@ -708,7 +785,7 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
         # Versi Python sama dengan venv lokal (3.14) -- versi yang sudah teruji.
         FROM python:3.14-slim
 
-        # Log langsung keluar (tanpa buffer) supaya tampil real-time di dashboard Render.
+        # Log langsung keluar (tanpa buffer) supaya tampil real-time di dashboard host.
         ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 
         WORKDIR /app
@@ -720,8 +797,10 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
 
         COPY . .
 
-        # Render memberi port lewat env var PORT. Satu worker saja: pool koneksi
-        # Supavisor free tier terbatas, dan BackgroundTasks berjalan in-process.
+        # Railway otomatis inject env var PORT dan app WAJIB listen di
+        # 0.0.0.0:$PORT (dikonfirmasi di docs.railway.com/variables/reference).
+        # Satu worker saja: pool koneksi Supavisor free tier terbatas, dan
+        # BackgroundTasks berjalan in-process.
         CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
         ```
       - Hasil: file ada di `backend/Dockerfile` (tanpa ekstensi).
@@ -741,34 +820,73 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
         `docker run --rm -p 8000:8000 --env-file .env fetch-api`, lalu di
         terminal lain `curl localhost:8000/health`.
       - Hasil: `{"status":"ok"}`. Kalau Docker tidak terpasang, lewati —
-        build log Render di 5.4 jadi pengujiannya.
+        build log Railway di 5.4 jadi pengujiannya.
 - [ ] **Commit & push file deploy**
       - Langkah (di `FETCH/`): `git add backend/Dockerfile backend/.dockerignore`
-        → `git commit -m "Add Dockerfile for Render deploy"` → `git push`
+        → `git commit -m "Add Dockerfile for deploy"` → `git push`
       - Hasil: kedua file terlihat di GitHub.
+      - Catatan: kalau kamu sudah pernah commit ini lebih dulu dengan pesan
+        yang menyebut "Render" (sebelum amandemen pivot ke Railway) -- tidak
+        apa-apa, Dockerfile-nya sendiri host-agnostic (cuma baca env var
+        `PORT`, tidak spesifik Render). Tidak perlu commit ulang cuma buat
+        ganti nama di pesan commit lama.
 
-### 5.3 Render: akun, service, environment variables
+### 5.3 Railway: akun, service, environment variables
 
-- [ ] **Buat akun Render**
+**Amandemen (2026-09-23) — akun Railway baru (trial di-reset), repo dijadikan
+public.** Akun Railway pertama sudah kepakai trial-nya sia-sia (dicoba dari
+sesi lain sebelum sempat sampai deploy). User buat akun baru + repo GitHub
+diubah jadi **public** (tidak masalah dari sisi secret -- `.env` sudah
+terverifikasi tidak pernah ter-track sejak Fase 5.1, jadi tidak ada yang
+"bocor" cuma karena repo terbuka).
+
+**Bug nyata ketemu & sudah di-fix (2026-09-23):** deploy pertama gagal.
+
+- **Gejala:** log build berhenti dengan `Script start.sh not found`, lalu
+  `Railpack could not determine how to build the app`.
+- **Sebab:** Railway (builder-nya bernama **Railpack**) baca **root repo**,
+  bukan folder `backend/` — cuma melihat folder `backend/`/`docs/`/`mobile/`
+  tanpa tahu cara build-nya, karena task **"Set Root Directory ke backend"**
+  di bawah belum dikerjakan waktu deploy pertama otomatis terpicu begitu
+  repo di-connect.
+- **Fix:** isi Root Directory dengan `backend` → Railway ketemu
+  `backend/Dockerfile` dan build lewat situ.
+- **Pelajaran:** kalau urutannya connect repo dulu baru atur Root Directory
+  belakangan (urutan yang wajar dilakukan orang), deploy pertama **hampir
+  pasti gagal** duluan. Itu normal, bukan tanda ada yang salah secara
+  fundamental — tinggal redeploy setelah setting-nya benar.
+
+- [x] **Buat akun Railway & cek TIDAK diminta kartu kredit**
       — concepts: deployment-hosting
-      - Langkah: render.com → Get Started → **Sign up with GitHub** (supaya
-        Render bisa membaca repo privatmu).
-      - Hasil: masuk ke dashboard Render.
-- [ ] **Buat Web Service dari repo**
+      - Hasil: akun baru dibuat, tidak diminta kartu.
+- [x] **Buat project baru dari repo GitHub (public)**
       — concepts: deployment-hosting
-      - Langkah: New + → **Web Service** → pilih repo `fetch` (kalau tidak
-        muncul: "Configure account" → beri akses ke repo itu). Isi:
-        - Name: `fetch-api` (menentukan URL: `https://fetch-api.onrender.com`;
-          kalau nama sudah dipakai orang, Render menambah akhiran acak)
-        - Region: **Singapore (Southeast Asia)**
-        - Branch: `main`
-        - Root Directory: `backend`
-        - Language/Runtime: **Docker** (Render mendeteksi Dockerfile)
-        - Instance Type: **Free**
-      - **JANGAN klik Deploy dulu** — isi environment variables di dua task
-        berikut (di halaman yang sama, bagian "Environment Variables"). Kalau
-        terlanjur deploy, tidak apa-apa: deploy pertama akan crash karena env
-        kosong; isi env lalu deploy ulang.
+      - Hasil: service ter-connect ke repo `fetch`.
+- [x] **Set Root Directory ke `backend`**
+      — concepts: deployment-hosting
+      - Hasil: field tersimpan -- ini yang memperbaiki error Railpack di atas.
+- [ ] **Verifikasi build sukses setelah fix Root Directory**
+      — concepts: deployment-hosting
+      - Langkah: buka tab **Deployments** → deployment terbaru (atau trigger
+        **Redeploy** kalau belum otomatis jalan ulang setelah ganti setting)
+        → tunggu, baca log build.
+      - Hasil: log build kali ini menyebut `Dockerfile` (bukan Railpack
+        auto-detect lagi), diakhiri `Uvicorn running on http://0.0.0.0:...`,
+        status deployment jadi **Success**/**Active**.
+      - Kalau masih gagal dan log **tidak** menyebut Dockerfile sama sekali:
+        buka Settings → bagian **Build** → cari opsi pilih builder secara
+        eksplisit → pilih **Dockerfile** (jangan biarkan "Automatic").
+- [ ] **Cek & pilih region Singapore — lakukan ini SEKARANG, bukan belakangan**
+      — concepts: deployment-hosting
+      - Langkah: Settings → bagian **Region** (atau saat konfigurasi
+        deployment pertama) → cari **Southeast Asia (Singapore)**.
+      - Hasil kalau tersedia: pilih itu, lanjut normal.
+      - Hasil kalau TERKUNCI/tidak muncul (kemungkinan nyata di plan Trial/
+        Free, lihat amandemen di atas): catat region default yang dipakai,
+        lanjutkan deploy ke situ dulu (jangan berhenti total di sini) --
+        efeknya cuma latensi DB lebih tinggi dari yang direncanakan, bukan
+        kegagalan. Kabari supaya kita evaluasi ulang opsi lain kalau memang
+        terkunci.
 - [ ] **Buat JWT secret baru khusus production**
       — concepts: api-key-secrets-management
       - Langkah (di `backend/`):
@@ -778,46 +896,62 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
         sudah berkali-kali tersentuh selama development; production pantas
         punya secret sendiri. Token lama dari laptop jadi tidak berlaku di
         server — memang itu tujuannya.
-- [ ] **Isi environment variables di Render**
+- [ ] **Isi environment variables di Railway**
       — concepts: api-key-secrets-management
-      - Langkah: bagian Environment Variables → Add, tiga baris:
+      - Langkah: tab **Variables** di service → **New Variable** (atau "Raw
+        Editor" untuk tempel sekaligus), tiga baris:
 
         | Key | Value |
         |---|---|
-        | `DATABASE_URL` | salin persis dari `backend/.env` (yang host-nya `...pooler.supabase.com:5432`) |
+        | `DATABASE_URL` | salin persis dari `backend/.env` (host-nya `...pooler.supabase.com:5432`, region Singapore) |
         | `GEMINI_API_KEY` | salin dari `backend/.env` |
         | `JWT_SECRET_KEY` | hasil task sebelumnya |
 
       - Perhatikan: tanpa tanda kutip, tanpa spasi di awal/akhir. Secret
-        diisi di dashboard, **bukan** di file mana pun di repo — itu inti dari
-        manajemen secret lewat environment variable.
-      - Hasil: tiga env var tersimpan.
-- [ ] **Set health check path**
-      - Langkah: Advanced (atau Settings setelah service jadi) →
-        Health Check Path: `/health`
-      - Kenapa: Render baru mengalihkan trafik ke versi baru setelah
-        `/health` menjawab 200 — deploy yang rusak tidak menggantikan yang sehat.
+        diisi di dashboard, **bukan** di file mana pun di repo.
+      - Hasil: tiga env var tersimpan. Railway menandainya sebagai
+        "staged changes" -- klik **Deploy** di pojok untuk menerapkannya
+        (jangan lupa, beda dari Render yang langsung apply).
+- [ ] **Generate domain publik**
+      — concepts: deployment-hosting
+      - Langkah: Settings → **Networking** → **Public Networking** → klik
+        **Generate Domain**.
+      - Kenapa task terpisah: **beda dari Render, Railway TIDAK otomatis
+        kasih URL publik** -- tanpa langkah ini service jalan tapi tidak
+        bisa diakses dari luar sama sekali.
+      - Hasil: muncul URL berbentuk `https://<nama-acak>.up.railway.app`.
+        Catat URL ini, dipakai di semua task setelah ini.
+- [x] **Set health check path**
+      - Langkah: buka **Settings** service → cari field **Healthcheck Path**
+        (dokumentasi resmi Railway cuma bilang "di halaman service settings",
+        tidak menyebut nama sub-tab pastinya — kemungkinan besar ada di
+        bagian **Deploy**, tapi kalau tidak ketemu di situ, scroll/cari
+        seluruh halaman Settings) → isi `/health`.
+      - Kenapa: Railway baru mengalihkan trafik ke versi baru setelah
+        `/health` menjawab 200 — deploy yang rusak tidak menggantikan yang
+        sehat. Default timeout 300 detik, cukup untuk build kita.
 
 ### 5.4 Deploy & verifikasi server
 
-- [ ] **Deploy pertama sampai status "Live"**
+*(Build & deploy pertama sudah diverifikasi di task "Verifikasi build sukses
+setelah fix Root Directory" di §5.3 — kalau paket lain (bukan Root Directory)
+yang bikin build gagal: `ERROR: No matching distribution found for <paket>`
+→ paket itu belum punya versi untuk Python 3.14 Linux, catat namanya;
+`KeyError: 'GEMINI_API_KEY'`/`JWT_SECRET_KEY` → env var belum diisi/salah
+nama, balik ke task "Isi environment variables di Railway" di §5.3.)*
+
+- [x] **Verifikasi `/health` dari URL publik**
       — concepts: deployment-hosting
-      - Langkah: Create Web Service / Deploy → buka tab **Logs**, tunggu
-        (build pertama beberapa menit: install requirements termasuk yt-dlp).
-      - Hasil: log berakhir dengan `Uvicorn running on http://0.0.0.0:...`
-        dan status service **Live**.
-      - Kalau gagal: baca baris error pertama di log build.
-        `ERROR: No matching distribution found for <paket>` → paket itu belum
-        punya versi untuk Python 3.14 Linux; catat nama paketnya.
-        `KeyError: 'GEMINI_API_KEY'` / `JWT_SECRET_KEY` → env var belum diisi
-        atau salah nama.
-- [ ] **Verifikasi `/health` dari URL publik**
-      — concepts: deployment-hosting
-      - Langkah (Git Bash): `curl -i https://<nama-service>.onrender.com/health`
+      - Langkah (Git Bash): `curl -i https://<domain-railway>/health`
       - Hasil: `HTTP/2 200` dan body `{"status":"ok"}`. Buka juga URL yang
         sama di browser HP (pakai data seluler, bukan WiFi rumah) — harus
         tampil teks yang sama.
-- [ ] **Verifikasi migrasi database = head**
+      - **Hasil sungguhan (2026-09-23):** `https://fetch-production-35a4.up.railway.app/health`
+        → `200 OK`, `{"status":"ok"}`, 0.43s. Header response `x-railway-edge: sin1`
+        dan `x-hikari-trace: sin1.hs0s` mengindikasikan server jalan di
+        **Singapore** — region trial ternyata tersedia. Belum dicek dari
+        browser HP secara langsung, cuma dari curl laptop.
+- [x] **Verifikasi migrasi database = head**
       — concepts: orm-migrations
       - Konteks: karena production memakai DB yang sama dengan dev, migrasi
         tidak perlu dijalankan lagi — tapi harus **dibuktikan**, bukan diasumsikan.
@@ -825,43 +959,58 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
       - Hasil: mencetak `66de89f6cd67 (head)`.
       - Kalau hasilnya revisi lain / kosong: `venv/Scripts/python.exe -m alembic upgrade head`,
         lalu cek ulang.
-- [ ] **Uji login production dengan curl**
+- [x] **Uji login production dengan curl**
       - Langkah (Git Bash), pakai akun uji yang sudah ada:
         ```bash
-        curl -s -X POST https://<nama-service>.onrender.com/auth/login \
+        curl -s -X POST https://<domain-railway>/auth/login \
           -H "Content-Type: application/json" \
           -d '{"email":"rag-test@example.com","password":"ragtest12345"}'
         ```
       - Hasil: JSON berisi `"access_token":"eyJ..."`. Salin nilai token itu
         (tanpa kutip) untuk task-task berikut.
-      - Kalau `500`: buka Logs Render — biasanya `DATABASE_URL` salah.
-- [ ] **Uji daftar item production**
-      - Langkah: `curl -s https://<nama-service>.onrender.com/items -H "Authorization: Bearer <token>"`
+      - Kalau `500`: klik deployment yang aktif di halaman service (panel
+        log runtime terbuka otomatis di situ — bukan tombol "View Logs"
+        terpisah; kalau butuh log waktu build, bukan runtime, klik tab
+        **Build Logs** di panel yang sama) — biasanya `DATABASE_URL` salah.
+      - **Hasil sungguhan (2026-09-23):** token diterima normal.
+- [x] **Uji daftar item production**
+      - Langkah: `curl -s https://<domain-railway>/items -H "Authorization: Bearer <token>"`
       - Hasil: JSON array berisi item-item akun uji (Rendang, Deadlift, dst.) —
         bukti server membaca database yang sama.
-- [ ] **Uji pencarian semantik production**
+      - **Hasil sungguhan (2026-09-23):** array item akun `rag-test` tampil
+        lengkap (Sourdough, dst.) — server production baca DB Singapore yang
+        sama dengan dev.
+- [x] **Uji pencarian semantik production**
       - Langkah:
         ```bash
-        curl -s -w "\n%{time_total}s\n" -X POST https://<nama-service>.onrender.com/search \
+        curl -s -w "\n%{time_total}s\n" -X POST https://<domain-railway>/search \
           -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
           -d '{"query":"olahraga angkat beban"}'
         ```
       - Hasil: hasil pertama *Deadlift*. Angka di baris terakhir = latensi
         production pertamamu (di laptop: ± 2 detik) — catat.
-- [ ] **Uji simpan + pengayaan AI di server**
+      - **Hasil sungguhan (2026-09-23):** hasil pertama Deadlift (score
+        0.7138), lalu HIIT (0.6705) — identik dengan hasil uji lokal.
+        Latensi 0.77s (dari koneksi laptop saat ini, bukan dari HP).
+- [x] **Uji simpan + pengayaan AI di server**
       - Langkah:
         ```bash
-        curl -s -X POST https://<nama-service>.onrender.com/items \
+        curl -s -X POST https://<domain-railway>/items \
           -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
           -d '{"url":"https://en.wikipedia.org/wiki/Gado-gado"}'
         ```
-        Tunggu ± 15 detik, lalu buka tab Logs Render.
+        Tunggu ± 15 detik, lalu buka panel log deployment aktif (lihat cara di task login production tadi).
       - Hasil: log berisi `enrichment - item ... diperkaya: platform=generic ... ai=True embedding=True`.
       - Kalau `ai=False` dengan `429` di log: kuota harian Gemini habis
         (dipakai bersama dengan laptop). Bukan bug deploy — coba lagi besok.
-- [ ] **Uji ekstraksi YouTube dari server**
+      - **Hasil sungguhan (2026-09-23):** item Gado-gado, `processed: true`,
+        title "Gado-gado - Wikipedia", ringkasan Bahasa Indonesia lengkap,
+        kategori "Food & Cooking". Ekstraksi + Gemini + embedding semua
+        jalan penuh di production (diverifikasi lewat `GET /items/{id}`,
+        bukan lewat log dashboard — hasilnya setara).
+- [x] **Uji ekstraksi YouTube dari server**
       - Langkah: ulangi task sebelumnya dengan URL
-        `https://www.youtube.com/watch?v=jNQXAC9IVRw`, lalu cek log.
+        `https://www.youtube.com/watch?v=jNQXAC9IVRw`, lalu cek panel log yang sama.
       - Hasil yang mungkin — **catat mana yang terjadi**:
         - `sources=['yt_dlp']` → yt-dlp jalan normal dari server.
         - `sources=['open_graph']` + baris `yt-dlp gagal ... Sign in to confirm you're not a bot`
@@ -869,16 +1018,37 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
           tetap tersimpan dengan judul + deskripsi dari Open Graph
           (graceful degradation bekerja sesuai desain), hanya lebih tipis.
           Catat sebagai keterbatasan production, bukan kegagalan task.
+      - **Hasil sungguhan (2026-09-23):** kasus kedua yang terjadi —
+        `title: "YouTube"`, ringkasan generik soal platform-nya ("Platform
+        tempat pengguna dapat menikmati video dan musik..."), bukan tentang
+        video "Me at the zoo" itu sendiri. Ciri khas yt-dlp diblokir IP
+        Railway lalu jatuh ke Open Graph generik. `processed: true`, item
+        tetap tersimpan dan bisa dicari — graceful degradation bekerja
+        sesuai desain. Belum sempat cek log dashboard langsung untuk
+        konfirmasi baris `yt-dlp gagal` persis, tapi datanya konsisten
+        dengan skenario itu.
+- [ ] **Aktifkan fitur Serverless (tidur otomatis)**
+      - Langkah: Settings service → cari bagian **Serverless** → aktifkan.
+      - Kenapa wajib, bukan opsional: beda dari Render, di Railway ini
+        **mati by default**. Tanpa ini, service menyala 24/7 dan menghabiskan
+        kredit trial/bulanan jauh lebih cepat (lihat amandemen di atas,
+        estimasi ± $3/bulan kalau menyala terus tanpa fitur ini).
+      - Hasil: ada indikator "Serverless enabled" di dashboard.
 - [ ] **Uji perilaku cold start (service tidur)**
-      - Langkah: jangan sentuh server ≥ 20 menit (dashboard menunjukkan
-        service tidur). Lalu jalankan lagi
-        `curl -i -w "\n%{time_total}s\n" https://<nama-service>.onrender.com/health`.
-      - Hasil: tetap `200`, tapi butuh ± 30–60 detik. Catat angkanya — ini
-        yang akan dirasakan saat share pertama setelah HP lama tidak dipakai.
+      - Langkah: jangan sentuh server ≥ 10 menit (Railway tidur setelah ±5
+        menit tanpa trafik keluar-masuk, beda dari Render yang 15 menit).
+        Lalu jalankan `curl -i -w "\n%{time_total}s\n" https://<domain-railway>/health`.
+      - Hasil yang mungkin — **catat mana yang terjadi**:
+        - Langsung `200` setelah beberapa detik jeda (mirip pengalaman Render).
+        - **Satu kali `502`**, lalu `curl` yang sama diulang langsung `200`.
+          Ini perilaku terdokumentasi Railway (request pertama ke service
+          yang tidur kadang gagal sekali sebelum instance-nya benar-benar
+          hidup) — bukan bug, tapi catat karena app mobile kita **belum**
+          menangani retry otomatis untuk kasus ini.
 
 ### 5.5 Build app untuk production
 
-- [ ] **Buat base URL API bisa diatur saat build**
+- [x] **Buat base URL API bisa diatur saat build**
       - Langkah: di `mobile/lib/api/api_client.dart`, ganti getter `_baseUrl`
         (sekarang hardcode `10.0.2.2`) menjadi:
         ```dart
@@ -896,18 +1066,31 @@ sungguhan yang bocor) — cukup stop tracking mulai commit berikutnya:
       - Kenapa `--dart-define`, bukan langsung ganti string-nya: emulator
         tetap bisa dipakai untuk development tanpa mengedit kode bolak-balik.
       - Hasil: `/c/flutter/bin/flutter analyze` (di `mobile/`) → `No issues found!`
-- [ ] **Commit perubahan base URL**
+- [x] **Commit perubahan base URL**
       - Langkah: `git add mobile/lib/api/api_client.dart` →
         `git commit -m "Configurable API base URL via dart-define"` → `git push`
-- [ ] **Build release APK dengan URL production**
+- [x] **Build release APK dengan URL production**
       - Langkah (di `mobile/`, Git Bash):
-        `/c/flutter/bin/flutter build apk --release --dart-define=API_BASE_URL=https://<nama-service>.onrender.com`
+        `/c/flutter/bin/flutter build apk --release --dart-define=API_BASE_URL=https://<domain-railway>`
         (tanpa garis miring `/` di akhir URL — kode menambahkan `/items` dst.
         sendiri; garis miring ganda bisa bikin 404.)
       - Hasil: `√ Built build\app\outputs\flutter-apk\app-release.apk (xx.xMB)`.
       - Catatan: APK ini ditandatangani dengan **debug key** (setting bawaan
         di `android/app/build.gradle.kts`). Cukup untuk sideload ke HP sendiri;
         baru jadi masalah kalau suatu hari mau ke Play Store.
+      - **Bug lingkungan ketemu (2026-09-23, bukan bug kode):** percobaan
+        pertama gagal — `An Application Control policy has blocked this
+        file` waktu menjalankan `gen_snapshot.EXE` (compiler AOT Flutter
+        untuk target arm64 release). Ini kebijakan Windows di laptop, bukan
+        error Dart/Flutter. Kemungkinan besar karena ini **pertama kalinya**
+        target `--release` dijalankan di laptop ini (semua build sebelumnya
+        di proyek ini `--debug`, lewat jalur compiler berbeda). Percobaan
+        kedua (tanpa perubahan apa pun) **berhasil** — sepertinya Windows
+        Defender masih scan file itu di percobaan pertama. Kalau ini
+        terulang lagi nanti: coba ulang 1-2x dulu sebelum curiga ada yang
+        salah beneran.
+      - **Hasil sungguhan (2026-09-23):** `app-release.apk`, 48.0MB, build
+        ke-2 sukses, dengan `API_BASE_URL=https://fetch-production-35a4.up.railway.app`.
 
 ### 5.6 Install ke HP fisik (Infinix)
 
@@ -969,10 +1152,14 @@ bicara ke server publik, bukan ke laptop. Backend lokal di laptop boleh mati.
       - Hasil: app terbuka (tidak macet di splash — bug BLOKIR-D dulu), sheet
         "Saved" muncul, item tersimpan.
 - [ ] **Share pertama setelah server tidur**
-      - Langkah: jangan buka Fetch ≥ 20 menit → share satu link.
-      - Hasil: tetap tersimpan, tapi penyimpanan bisa tertahan ± 30–60 detik
-        (server Render sedang bangun). Catat pengalamanmu: masih bisa
-        diterima, atau perlu ditangani nanti (mis. ping berkala)?
+      - Langkah: jangan buka Fetch ≥ 10 menit (Railway) → share satu link.
+      - Hasil: tetap tersimpan, tapi bisa tertahan beberapa detik-menit
+        (server Railway sedang bangun dari mode Serverless), atau sheet
+        "Saved" sempat menampilkan pesan gagal sekali (kalau kena 502 di
+        request pertama, lihat §5.4) — coba share ulang kalau itu terjadi.
+        Catat pengalamanmu: masih bisa diterima, atau perlu ditangani nanti
+        (mis. retry otomatis di app, atau matikan Serverless kalau
+        kreditnya masih cukup)?
 - [ ] **Cari item yang barusan disimpan**
       - Langkah: ikon cari → ketik kalimat yang menggambarkan video/link tadi
         *dengan kata-kata lain* (bukan judulnya) → enter.
@@ -986,7 +1173,8 @@ bicara ke server publik, bukan ke laptop. Backend lokal di laptop boleh mati.
         browser), karena kedua app terpasang di HP.
 - [ ] **Catat angka & temuan production ke PROJECT_DESCRIPTION.md**
       - Langkah: tambahkan ke `docs/PROJECT_DESCRIPTION.md` bagian
-        "Deployment": host & region (Render Singapore), latensi `/search` dari
+        "Deployment": host & region (Railway, region yang ternyata
+        terpakai -- Singapore kalau tersedia di §5.3), latensi `/search` dari
         curl, lama cold start, hasil uji yt-dlp dari server, dan keterbatasan
         yang ditemukan. Doc itu memang minta angka nyata setelah project jalan.
       - Hasil: bagian Deployment berisi angka hasil pengukuranmu sendiri.
@@ -1003,19 +1191,70 @@ bicara ke server publik, bukan ke laptop. Backend lokal di laptop boleh mati.
 "video masak dari bulan lalu" separuhnya semantik, separuhnya filter. Ditunda ke
 sini biar Fase 4 fokus RAG dasar dulu.*
 
-- [ ] Tambahkan filter kategori pada query pencarian
+- [x] Tambahkan filter kategori pada query pencarian
       — concepts: hybrid-retrieval
-- [ ] Tambahkan filter rentang waktu (`created_at`) pada query pencarian
+- [x] Tambahkan filter rentang waktu (`created_at`) pada query pencarian
       — concepts: hybrid-retrieval
-- [ ] Gabungkan filter terstruktur dan similarity dalam satu query SQL
+- [x] Gabungkan filter terstruktur dan similarity dalam satu query SQL
       — concepts: hybrid-retrieval
-- [ ] Uji query campuran (semantik + filter) memberi hasil yang masuk akal
+      - `SearchFilters` (schemas.py) = `category`, `created_after` (inklusif),
+        `created_before` (eksklusif); dipakai `/search` dan `/search/answer`.
+        Filter masuk WHERE yang sama dengan `distance <= 1 - MIN_SCORE`,
+        bukan disaring di Python setelah LIMIT.
+- [x] Uji query campuran (semantik + filter) memberi hasil yang masuk akal
       — concepts: hybrid-retrieval
+      - **Hasil sungguhan (2026-09-24, akun rag-test):** "makanan indonesia"
+        tanpa filter → Rendang, Gado-gado, Nasi goreng. `created_after`
+        2026-09-22 → cuma Gado-gado (disimpan 09-23). `created_before`
+        2026-09-22 → Rendang + Nasi goreng. `category: Travel` → kosong
+        (benar). "tempat wisata gunung" + Travel → Mount Bromo (0.73).
+        Kategori di luar daftar / rentang terbalik → 422.
+      - Temuan: "liburan" + Travel → kosong, padahal Bali/Bromo ada. Bukan
+        bug filter: skor keduanya < MIN_SCORE 0.60 untuk query satu kata
+        (tanpa filter pun hasilnya cuma HIIT 0.607). Filter hanya
+        menyaring, tidak menurunkan ambang.
 
-- [ ] Endpoint `PATCH /items/{id}` untuk edit
-- [ ] UI edit item di Flutter
-- [ ] UI hapus item di Flutter
-- [ ] Screen browse berdasarkan kategori
-- [ ] Loading state di semua screen yang memanggil API
-- [ ] Error handling dan tombol retry di API client
-- [ ] Empty state saat belum ada item tersimpan
+- [x] Endpoint `PATCH /items/{id}` untuk edit
+      - Field opsional title / summary / category (kategori divalidasi ke
+        daftar tetap). Title & kategori tidak boleh dikosongkan, summary boleh.
+        409 kalau item masih diproses AI (hasil AI akan menimpa editan).
+        Title/summary berubah → embedding dibuat ulang (kalau Gemini gagal,
+        vektor lama dipertahankan). Plus `GET /items/categories` untuk
+        dropdown di app.
+      - Bug ketemu saat uji: judul `"   "` lolos `min_length=1` karena strip
+        jalan SETELAH validasi panjang → diperbaiki dengan validator
+        `mode="before"`.
+- [x] UI edit item di Flutter
+      - Menu ⋮ di tiap item → Edit → bottom sheet (judul, ringkasan,
+        dropdown kategori). Hanya field yang berubah yang dikirim.
+- [x] UI hapus item di Flutter
+      - Menu ⋮ → Hapus → dialog konfirmasi → item hilang dari list tanpa
+        muat ulang semua.
+- [x] Screen browse berdasarkan kategori
+      - Chip kategori di atas daftar home (hanya kategori yang dipakai, urut
+        jumlah item). Pencarian punya filter kategori + waktu simpan
+        (7/30/365 hari) yang dikirim ke hybrid search di backend.
+- [x] Loading state di semua screen yang memanggil API
+- [x] Error handling dan tombol retry di API client
+      - `ApiClient._send`: timeout 30 detik, ulang otomatis SEKALI untuk
+        gangguan sementara (offline, timeout, 502/503/504 — kasus Railway
+        bangun tidur di §5.4). POST /items dan register TIDAK diulang
+        otomatis (bisa dobel); UI memberi tombol "Coba lagi". Error jaringan
+        jadi `ApiException(0, ...)`.
+      - Home: gagal muat pertama → layar error + "Coba lagi"; gagal refresh
+        saat data sudah ada → snackbar, data lama tetap tampil; 401 →
+        "Sesi sudah berakhir" + "Masuk lagi". Share-sheet yang gagal / belum
+        login sekarang memberi snackbar (dulu cuma debugPrint, diam-diam).
+- [x] Empty state saat belum ada item tersimpan
+      - Juga: "Tidak ada yang cocok dengan filter ini" + "Cari tanpa filter".
+- [x] Uji semua alur di emulator (2026-09-24, backend lokal + DB production)
+      - Sesi kedaluwarsa (token lama beda secret) → layar "Sesi sudah
+        berakhir" → login → chip kategori → filter Travel → edit judul item
+        YouTube jadi "Me at the zoo" → cari + filter waktu & kategori →
+        simpan link baru (Tempeh) → hapus → matikan server + tarik refresh
+        → snackbar "Tidak bisa terhubung", data tetap tampil. Semua sesuai.
+- [ ] **Deploy backend Fase 6 ke Railway** — APK baru memanggil
+      `PATCH /items/{id}`, `GET /items/categories`, dan filter di `/search`;
+      server production yang lama belum punya ketiganya (edit & filter
+      kategori di app akan gagal sampai backend ter-deploy). Tidak ada
+      migrasi DB.
