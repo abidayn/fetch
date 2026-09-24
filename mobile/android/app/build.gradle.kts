@@ -27,11 +27,28 @@ android {
         versionName = flutter.versionName
     }
 
+    // Keystore release cuma ada di CI (di-decode dari GitHub Secrets, lihat
+    // .github/workflows/android-release.yml). Kunci yang SAMA di tiap build
+    // wajib supaya APK baru bisa menimpa versi lama di HP tester -- debug key
+    // CI berbeda tiap runner. Build lokal tanpa file ini tetap pakai debug key.
+    val releaseKeystore = file("release.jks")
+    signingConfigs {
+        if (releaseKeystore.exists()) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (releaseKeystore.exists())
+                signingConfigs.getByName("release")
+            else
+                signingConfigs.getByName("debug")
         }
     }
 }

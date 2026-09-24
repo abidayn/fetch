@@ -1258,3 +1258,23 @@ sini biar Fase 4 fokus RAG dasar dulu.*
       server production yang lama belum punya ketiganya (edit & filter
       kategori di app akan gagal sampai backend ter-deploy). Tidak ada
       migrasi DB.
+
+### Rilis APK ke beta tester (CI/CD)
+
+*APK dibangun GitHub Actions (`.github/workflows/android-release.yml`) dan
+diterbitkan ke GitHub Releases. Tester unduh dari
+`https://github.com/abidayn/fetch/releases/latest/download/app-release.apk`.*
+
+- [x] Release keystore dibuat (2026-09-24) di luar repo:
+      `C:\Users\Acer\fetch-signing\` (`fetch-release.jks` + password).
+      Alias `fetch`, SHA-256 sertifikat diawali `2D:7A:3A:ED`. **Wajib
+      di-backup** -- kalau hilang, semua tester harus uninstall-install ulang.
+- [x] `build.gradle.kts`: pakai `android/app/release.jks` kalau ada (CI),
+      jatuh ke debug key kalau tidak (build lokal). Diuji lokal: APK
+      bertanda tangan kunci release.
+- [ ] Isi GitHub Secrets (`ANDROID_KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`,
+      `KEY_ALIAS`, `KEY_PASSWORD`) dan variable `API_BASE_URL`
+- [ ] Rilis pertama: `git tag v0.6.0` → `git push origin v0.6.0` → tab
+      Actions hijau → APK ada di Releases
+- Cara rilis berikutnya: merge ke `main`, deploy backend dulu kalau ada
+  perubahan API, lalu tag versi baru (`v0.6.1`, `v0.7.0`, ...).
