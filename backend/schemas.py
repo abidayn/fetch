@@ -10,7 +10,9 @@ tapi haram muncul di schema response.
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+
+from classifier import Category
 
 BCRYPT_MAX_BYTES = 72
 
@@ -55,6 +57,24 @@ class ItemCreate(BaseModel):
     url: str
 
 
+class ItemUpdate(BaseModel):
+    """PATCH /items/{id}: cuma field yang DIKIRIM yang diubah (exclude_unset).
+
+    url sengaja tidak bisa diedit: link beda = item beda, simpan baru saja.
+    """
+
+    title: str | None = Field(default=None, min_length=1, max_length=300)
+    summary: str | None = Field(default=None, max_length=2000)
+    category: Category | None = None
+
+    # mode="before": strip SEBELUM min_length dicek -- kalau sesudahnya,
+    # judul "   " lolos min_length lalu tersimpan sebagai string kosong.
+    @field_validator("title", "summary", mode="before")
+    @classmethod
+    def strip_text(cls, v):
+        return v.strip() if isinstance(v, str) else v
+
+
 class ItemPublic(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -68,7 +88,23 @@ class ItemPublic(BaseModel):
     created_at: datetime
 
 
-class SearchRequest(BaseModel):
+class SearchFilters(BaseModel):
+    """Bagian terstruktur dari hybrid retrieval: disaring di WHERE, bukan lewat
+    vektor. "video masak bulan lalu" = "masak" (semantik) + created_at (filter)
+    -- tanggal tidak bisa "dipahami" embedding, jadi harus jadi kolom."""
+
+    category: Category | None = None
+    created_after: datetime | None = None  # inklusif
+    created_before: datetime | None = None  # eksklusif
+
+    @model_validator(mode="after")
+    def range_is_valid(self):
+        if self.created_after and self.created_before and self.created_after >= self.created_before:
+            raise ValueError("created_after harus sebelum created_before.")
+        return self
+
+
+class SearchRequest(SearchFilters):
     query: str = Field(min_length=1, max_length=500)
     limit: int = Field(default=10, ge=1, le=50)
 
@@ -80,7 +116,7 @@ class SearchResult(ItemPublic):
     score: float
 
 
-class AnswerRequest(BaseModel):
+class AnswerRequest(SearchFilters):
     query: str = Field(min_length=1, max_length=500)
 
 

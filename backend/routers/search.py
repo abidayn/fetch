@@ -16,7 +16,7 @@ from deps import get_current_user
 from embeddings import embed_one
 from models import SavedItem, User
 from answerer import generate_answer
-from schemas import AnswerRequest, AnswerResponse, ItemPublic, SearchRequest, SearchResult
+from schemas import AnswerRequest, AnswerResponse, ItemPublic, SearchFilters, SearchRequest, SearchResult
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -29,8 +29,16 @@ MIN_SCORE = 0.60
 MAX_GAP_FROM_TOP = 0.06
 
 
-def retrieve(db: Session, user: User, query: str, limit: int) -> list[SearchResult]:
-    """Bagian R: dipakai /search (daftar) dan /search/answer (bahan jawaban)."""
+def retrieve(
+    db: Session, user: User, query: str, limit: int, filters: SearchFilters | None = None
+) -> list[SearchResult]:
+    """Bagian R: dipakai /search (daftar) dan /search/answer (bahan jawaban).
+
+    Hybrid: `filters` (kategori, rentang created_at) masuk WHERE yang sama
+    dengan jarak vektor -- satu query SQL, bukan cari dulu lalu saring di
+    Python. Saring belakangan akan membuang hasil SETELAH LIMIT dan bisa
+    menyisakan nol item padahal yang cocok ada di peringkat ke-11 dst.
+    """
     query_vector = embed_one(query.strip())
     if query_vector is None:
         # Tanpa vektor query tidak ada yang bisa dibandingkan. 503 = gangguan
@@ -45,13 +53,22 @@ def retrieve(db: Session, user: User, query: str, limit: int) -> list[SearchResu
     db.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
 
     distance = SavedItem.embedding.cosine_distance(query_vector)  # operator <=>
+    conditions = [
+        SavedItem.user_id == user.id,
+        SavedItem.embedding.is_not(None),
+        distance <= 1 - MIN_SCORE,
+    ]
+    if filters is not None:
+        if filters.category is not None:
+            conditions.append(SavedItem.category == filters.category)
+        if filters.created_after is not None:
+            conditions.append(SavedItem.created_at >= filters.created_after)
+        if filters.created_before is not None:
+            conditions.append(SavedItem.created_at < filters.created_before)
+
     rows = db.execute(
         select(SavedItem, distance.label("distance"))
-        .where(
-            SavedItem.user_id == user.id,
-            SavedItem.embedding.is_not(None),
-            distance <= 1 - MIN_SCORE,
-        )
+        .where(*conditions)
         .order_by(distance)
         .limit(limit)
     ).all()
@@ -71,7 +88,7 @@ def search(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return retrieve(db, current_user, payload.query, payload.limit)
+    return retrieve(db, current_user, payload.query, payload.limit, payload)
 
 
 # Konteks untuk LLM sengaja kecil: 5 item paling relevan. Lebih banyak =
@@ -88,7 +105,7 @@ def search_answer(
     db: Session = Depends(get_db),
 ):
     """RAG lengkap: R (retrieve) -> A (masukkan ke prompt) -> G (Gemini menjawab)."""
-    sources = retrieve(db, current_user, payload.query, ANSWER_CONTEXT_ITEMS)
+    sources = retrieve(db, current_user, payload.query, ANSWER_CONTEXT_ITEMS, payload)
     if not sources:
         # Tidak ada bahan = Gemini tidak dipanggil. Kalau dipanggil dengan
         # konteks kosong, ia cenderung menjawab dari pengetahuan umumnya --

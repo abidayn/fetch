@@ -36,6 +36,9 @@ class _FetchAppState extends State<FetchApp> {
   // MaterialApp untuk menampilkan sheet "Saved" dari sini.
   final _navigatorKey = GlobalKey<NavigatorState>();
 
+  // Alasan yang sama: snackbar "gagal simpan" dari luar pohon widget.
+  final _messengerKey = GlobalKey<ScaffoldMessengerState>();
+
   @override
   void initState() {
     super.initState();
@@ -69,26 +72,43 @@ class _FetchAppState extends State<FetchApp> {
     if (!await widget.apiClient.hasToken()) {
       // Belum login -- tidak ada tempat aman untuk simpan link ini. MVP
       // sengaja tidak antre link untuk disimpan nanti; user share ulang
-      // setelah login.
-      debugPrint('Share diterima tapi belum login, diabaikan: $url');
+      // setelah login. Tapi user harus TAHU link-nya tidak tersimpan.
+      await _showMessage('Masuk dulu, lalu share link-nya lagi.');
       return;
     }
+    await _saveShared(url);
+  }
 
+  Future<void> _saveShared(String url) async {
     try {
       final item = Item.fromJson(await widget.apiClient.createItem(url));
       _homeKey.currentState?.refresh();
       await _showSavedSheet(item);
-    } catch (e) {
-      debugPrint('Gagal simpan link dari share-sheet: $e');
+    } on ApiException catch (e) {
+      // Tanpa ini, share yang gagal (server tidur, offline) hilang diam-diam
+      // dan user mengira link-nya sudah tersimpan.
+      await _showMessage('Gagal menyimpan link: ${e.message}',
+          action: SnackBarAction(label: 'Coba lagi', onPressed: () => _saveShared(url)));
+    }
+  }
+
+  Future<void> _showMessage(String text, {SnackBarAction? action}) async {
+    await _waitForApp();
+    _messengerKey.currentState?.showSnackBar(
+      SnackBar(content: Text(text), action: action, duration: const Duration(seconds: 8)),
+    );
+  }
+
+  /// Cold start: share bisa diproses sebelum MaterialApp selesai membangun
+  /// Navigator-nya. Tunggu sebentar (maks ~5 detik) sampai siap.
+  Future<void> _waitForApp() async {
+    for (var i = 0; i < 25 && _navigatorKey.currentContext == null; i++) {
+      await Future.delayed(const Duration(milliseconds: 200));
     }
   }
 
   Future<void> _showSavedSheet(Item item) async {
-    // Cold start: share bisa diproses sebelum MaterialApp selesai membangun
-    // Navigator-nya. Tunggu sebentar (maks ~5 detik) sampai siap.
-    for (var i = 0; i < 25 && _navigatorKey.currentContext == null; i++) {
-      await Future.delayed(const Duration(milliseconds: 200));
-    }
+    await _waitForApp();
     final ctx = _navigatorKey.currentContext;
     if (ctx == null || !ctx.mounted) return;
     await showSaveResultSheet(ctx, widget.apiClient, item);
@@ -105,6 +125,7 @@ class _FetchAppState extends State<FetchApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       navigatorKey: _navigatorKey,
+      scaffoldMessengerKey: _messengerKey,
       title: 'Fetch',
       theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
       // FutureBuilder dipakai di root, bukan cuma langsung tampilkan

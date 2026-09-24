@@ -1166,19 +1166,70 @@ bicara ke server publik, bukan ke laptop. Backend lokal di laptop boleh mati.
 "video masak dari bulan lalu" separuhnya semantik, separuhnya filter. Ditunda ke
 sini biar Fase 4 fokus RAG dasar dulu.*
 
-- [ ] Tambahkan filter kategori pada query pencarian
+- [x] Tambahkan filter kategori pada query pencarian
       — concepts: hybrid-retrieval
-- [ ] Tambahkan filter rentang waktu (`created_at`) pada query pencarian
+- [x] Tambahkan filter rentang waktu (`created_at`) pada query pencarian
       — concepts: hybrid-retrieval
-- [ ] Gabungkan filter terstruktur dan similarity dalam satu query SQL
+- [x] Gabungkan filter terstruktur dan similarity dalam satu query SQL
       — concepts: hybrid-retrieval
-- [ ] Uji query campuran (semantik + filter) memberi hasil yang masuk akal
+      - `SearchFilters` (schemas.py) = `category`, `created_after` (inklusif),
+        `created_before` (eksklusif); dipakai `/search` dan `/search/answer`.
+        Filter masuk WHERE yang sama dengan `distance <= 1 - MIN_SCORE`,
+        bukan disaring di Python setelah LIMIT.
+- [x] Uji query campuran (semantik + filter) memberi hasil yang masuk akal
       — concepts: hybrid-retrieval
+      - **Hasil sungguhan (2026-09-24, akun rag-test):** "makanan indonesia"
+        tanpa filter → Rendang, Gado-gado, Nasi goreng. `created_after`
+        2026-09-22 → cuma Gado-gado (disimpan 09-23). `created_before`
+        2026-09-22 → Rendang + Nasi goreng. `category: Travel` → kosong
+        (benar). "tempat wisata gunung" + Travel → Mount Bromo (0.73).
+        Kategori di luar daftar / rentang terbalik → 422.
+      - Temuan: "liburan" + Travel → kosong, padahal Bali/Bromo ada. Bukan
+        bug filter: skor keduanya < MIN_SCORE 0.60 untuk query satu kata
+        (tanpa filter pun hasilnya cuma HIIT 0.607). Filter hanya
+        menyaring, tidak menurunkan ambang.
 
-- [ ] Endpoint `PATCH /items/{id}` untuk edit
-- [ ] UI edit item di Flutter
-- [ ] UI hapus item di Flutter
-- [ ] Screen browse berdasarkan kategori
-- [ ] Loading state di semua screen yang memanggil API
-- [ ] Error handling dan tombol retry di API client
-- [ ] Empty state saat belum ada item tersimpan
+- [x] Endpoint `PATCH /items/{id}` untuk edit
+      - Field opsional title / summary / category (kategori divalidasi ke
+        daftar tetap). Title & kategori tidak boleh dikosongkan, summary boleh.
+        409 kalau item masih diproses AI (hasil AI akan menimpa editan).
+        Title/summary berubah → embedding dibuat ulang (kalau Gemini gagal,
+        vektor lama dipertahankan). Plus `GET /items/categories` untuk
+        dropdown di app.
+      - Bug ketemu saat uji: judul `"   "` lolos `min_length=1` karena strip
+        jalan SETELAH validasi panjang → diperbaiki dengan validator
+        `mode="before"`.
+- [x] UI edit item di Flutter
+      - Menu ⋮ di tiap item → Edit → bottom sheet (judul, ringkasan,
+        dropdown kategori). Hanya field yang berubah yang dikirim.
+- [x] UI hapus item di Flutter
+      - Menu ⋮ → Hapus → dialog konfirmasi → item hilang dari list tanpa
+        muat ulang semua.
+- [x] Screen browse berdasarkan kategori
+      - Chip kategori di atas daftar home (hanya kategori yang dipakai, urut
+        jumlah item). Pencarian punya filter kategori + waktu simpan
+        (7/30/365 hari) yang dikirim ke hybrid search di backend.
+- [x] Loading state di semua screen yang memanggil API
+- [x] Error handling dan tombol retry di API client
+      - `ApiClient._send`: timeout 30 detik, ulang otomatis SEKALI untuk
+        gangguan sementara (offline, timeout, 502/503/504 — kasus Railway
+        bangun tidur di §5.4). POST /items dan register TIDAK diulang
+        otomatis (bisa dobel); UI memberi tombol "Coba lagi". Error jaringan
+        jadi `ApiException(0, ...)`.
+      - Home: gagal muat pertama → layar error + "Coba lagi"; gagal refresh
+        saat data sudah ada → snackbar, data lama tetap tampil; 401 →
+        "Sesi sudah berakhir" + "Masuk lagi". Share-sheet yang gagal / belum
+        login sekarang memberi snackbar (dulu cuma debugPrint, diam-diam).
+- [x] Empty state saat belum ada item tersimpan
+      - Juga: "Tidak ada yang cocok dengan filter ini" + "Cari tanpa filter".
+- [x] Uji semua alur di emulator (2026-09-24, backend lokal + DB production)
+      - Sesi kedaluwarsa (token lama beda secret) → layar "Sesi sudah
+        berakhir" → login → chip kategori → filter Travel → edit judul item
+        YouTube jadi "Me at the zoo" → cari + filter waktu & kategori →
+        simpan link baru (Tempeh) → hapus → matikan server + tarik refresh
+        → snackbar "Tidak bisa terhubung", data tetap tampil. Semua sesuai.
+- [ ] **Deploy backend Fase 6 ke Railway** — APK baru memanggil
+      `PATCH /items/{id}`, `GET /items/categories`, dan filter di `/search`;
+      server production yang lama belum punya ketiganya (edit & filter
+      kategori di app akan gagal sampai backend ter-deploy). Tidak ada
+      migrasi DB.

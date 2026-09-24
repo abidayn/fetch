@@ -4,10 +4,10 @@ import 'package:flutter/material.dart';
 
 import '../api/api_client.dart';
 import '../models/item.dart';
-import '../util/open_link.dart';
+import '../widgets/item_tile.dart';
+import '../widgets/save_result_sheet.dart';
 import 'login_screen.dart';
 import 'search_screen.dart';
-import '../widgets/save_result_sheet.dart';
 
 class HomeScreen extends StatefulWidget {
   final ApiClient apiClient;
@@ -22,7 +22,16 @@ class HomeScreen extends StatefulWidget {
 /// `refresh()` dari GlobalKey ketika ada link baru masuk lewat share-sheet,
 /// tanpa perlu state management library buat satu kasus ini.
 class HomeScreenState extends State<HomeScreen> {
-  late Future<List<Item>> _future;
+  // State eksplisit, bukan FutureBuilder: edit & hapus mengubah list di
+  // tempat (tanpa muat ulang semua), dan gagal-refresh saat data lama masih
+  // ada cukup jadi snackbar -- bukan mengganti seluruh layar dengan error.
+  List<Item>? _items;
+  ApiException? _error;
+  bool _loading = false;
+
+  // null = "Semua". Browse per kategori disaring di sisi app: semua item
+  // user sudah dimuat untuk daftar ini, jadi tidak perlu request lagi.
+  String? _category;
 
   // Pengayaan AI jalan di background 5-10 detik SETELAH item disimpan, jadi
   // item baru awalnya tampil "memproses". Selama masih ada item yang belum
@@ -36,7 +45,7 @@ class HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _future = _load();
+    _load();
   }
 
   @override
@@ -45,39 +54,53 @@ class HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  Future<List<Item>> _load() async {
-    final raw = await widget.apiClient.listItems();
-    final items = raw.map((e) => Item.fromJson(e as Map<String, dynamic>)).toList();
-    _schedulePollIfPending(items);
-    return items;
+  Future<void> _load({bool fromPoll = false}) async {
+    if (_loading) return;
+    setState(() {
+      _loading = true;
+      if (_items == null) _error = null;
+    });
+    try {
+      final raw = await widget.apiClient.listItems();
+      if (!mounted) return;
+      final items = raw.map((e) => Item.fromJson(e as Map<String, dynamic>)).toList();
+      setState(() {
+        _items = items;
+        _error = null;
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      if (_items == null || e.isUnauthorized) {
+        setState(() => _error = e);
+      } else if (!fromPoll) {
+        // Data lama masih berguna -- cukup kabari, jangan kosongkan layar.
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Gagal memperbarui: ${e.message}')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _loading = false);
+        // Di finally: poll yang gagal (jaringan sesaat) tetap dijadwalkan ulang.
+        _schedulePollIfPending();
+      }
+    }
   }
 
-  void _schedulePollIfPending(List<Item> items) {
+  void _schedulePollIfPending() {
     _pollTimer?.cancel();
-    final pending = items.any((it) => !it.processed);
+    final pending = _items?.any((it) => !it.processed) ?? false;
     if (!pending || _polls >= _maxPolls || !mounted) return;
     _pollTimer = Timer(_pollInterval, () {
       if (!mounted) return;
       _polls++;
-      setState(() {
-        _future = _load();
-      });
+      _load(fromPoll: true);
     });
   }
 
-  void refresh() {
-    // Bug nyata yang ketemu saat uji share-sheet: `setState(() => _future =
-    // _load())` -- closure arrow-style itu me-return NILAI hasil assignment,
-    // yaitu Future<List<Item>> dari _load(). Flutter melempar assertion
-    // error kalau callback setState() mengembalikan Future (karena setState
-    // harus sinkron). Efeknya sebelumnya: assignment tetap kejadian (item
-    // sudah tersimpan di backend), tapi rebuild-nya gagal ditengah jalan dan
-    // errornya salah kaprah ketangkap sebagai "gagal simpan link" di
-    // main.dart. Fix: pakai block body {} supaya closure return void.
+  Future<void> refresh() {
     _polls = 0;
-    setState(() {
-      _future = _load();
-    });
+    return _load();
   }
 
   Future<void> _logout() async {
@@ -90,9 +113,8 @@ class HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Form manual "tempel link" -- pengganti sementara share-sheet, dan tetap
-  /// berguna sebagai jalur cadangan buat testing tanpa harus share dari app
-  /// lain tiap kali.
+  /// Form manual "tempel link" -- jalur cadangan kalau app asal tidak punya
+  /// tombol share ke Fetch, dan berguna buat testing.
   Future<void> _addManually() async {
     final ctrl = TextEditingController();
     final url = await showDialog<String>(
@@ -102,7 +124,9 @@ class HomeScreenState extends State<HomeScreen> {
         content: TextField(
           controller: ctrl,
           decoration: const InputDecoration(hintText: 'https://...'),
+          keyboardType: TextInputType.url,
           autofocus: true,
+          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Batal')),
@@ -112,29 +136,164 @@ class HomeScreenState extends State<HomeScreen> {
       ),
     );
     if (url == null || url.isEmpty) return;
+    await _save(url);
+  }
+
+  Future<void> _save(String url) async {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(content: Text('Menyimpan…'), duration: Duration(seconds: 30)));
     try {
       final item = Item.fromJson(await widget.apiClient.createItem(url));
+      messenger.hideCurrentSnackBar();
       refresh();
       if (!mounted) return;
       await showSaveResultSheet(context, widget.apiClient, item);
       refresh();
     } on ApiException catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      messenger.hideCurrentSnackBar();
+      // POST tidak diulang otomatis (bisa dobel), jadi user yang memutuskan.
+      messenger.showSnackBar(SnackBar(
+        content: Text('Gagal menyimpan: ${e.message}'),
+        duration: const Duration(seconds: 8),
+        action: SnackBarAction(label: 'Coba lagi', onPressed: () => _save(url)),
+      ));
     }
   }
 
-  Widget _subtitle(Item item) {
-    if (!item.processed) {
-      return const Text('Memproses…', style: TextStyle(fontStyle: FontStyle.italic));
+  void _replace(Item updated) {
+    setState(() {
+      _items = [for (final it in _items!) it.id == updated.id ? updated : it];
+    });
+  }
+
+  void _remove(Item removed) {
+    setState(() {
+      _items = _items!.where((it) => it.id != removed.id).toList();
+    });
+  }
+
+  void _openSearch() {
+    Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => SearchScreen(apiClient: widget.apiClient)))
+        // Item bisa diedit/dihapus dari layar cari -- samakan saat kembali.
+        .then((_) => refresh());
+  }
+
+  /// Chip kategori yang benar-benar dipakai user, urut dari yang paling
+  /// banyak isinya. Kategori kosong tidak ditampilkan -- chip yang selalu
+  /// menghasilkan layar kosong cuma bikin bingung.
+  Widget _categoryChips(List<Item> items) {
+    final counts = <String, int>{};
+    for (final it in items) {
+      final c = it.category;
+      if (c != null) counts[c] = (counts[c] ?? 0) + 1;
     }
-    final meta = [item.category, item.platform].whereType<String>().join(' · ');
-    if (item.summary == null) {
-      // Sudah diproses tapi tidak ada isi yang bisa dibaca (mis. Instagram
-      // tanpa login) -- tampilkan apa adanya, bukan "memproses" selamanya.
-      return Text(meta.isEmpty ? item.url : meta, maxLines: 1, overflow: TextOverflow.ellipsis);
+    final cats = counts.keys.toList()..sort((a, b) => counts[b]!.compareTo(counts[a]!));
+    return SizedBox(
+      height: 52,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: ChoiceChip(
+              label: Text('Semua (${items.length})'),
+              selected: _category == null,
+              onSelected: (_) => setState(() => _category = null),
+            ),
+          ),
+          for (final c in cats)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ChoiceChip(
+                label: Text('$c (${counts[c]})'),
+                selected: _category == c,
+                onSelected: (sel) => setState(() => _category = sel ? c : null),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// Pesan di tengah layar yang tetap bisa ditarik untuk refresh.
+  Widget _message({required IconData icon, required String title, String? detail, Widget? action}) {
+    final theme = Theme.of(context);
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(32, 96, 32, 32),
+      children: [
+        Icon(icon, size: 48, color: theme.colorScheme.onSurfaceVariant),
+        const SizedBox(height: 16),
+        Text(title, style: theme.textTheme.titleMedium, textAlign: TextAlign.center),
+        if (detail != null) ...[
+          const SizedBox(height: 8),
+          Text(detail, style: theme.textTheme.bodyMedium, textAlign: TextAlign.center),
+        ],
+        if (action != null) ...[const SizedBox(height: 16), Center(child: action)],
+      ],
+    );
+  }
+
+  Widget _body() {
+    final items = _items;
+    final error = _error;
+
+    if (error != null && error.isUnauthorized) {
+      return _message(
+        icon: Icons.lock_outline,
+        title: 'Sesi sudah berakhir',
+        detail: 'Masuk lagi untuk melihat item tersimpan.',
+        action: FilledButton(onPressed: _logout, child: const Text('Masuk lagi')),
+      );
     }
-    return Text('$meta\n${item.summary}', maxLines: 2, overflow: TextOverflow.ellipsis);
+    if (items == null) {
+      if (error != null) {
+        return _message(
+          icon: Icons.cloud_off,
+          title: 'Gagal memuat',
+          detail: error.message,
+          action: FilledButton.icon(
+            onPressed: _loading ? null : refresh,
+            icon: const Icon(Icons.refresh),
+            label: const Text('Coba lagi'),
+          ),
+        );
+      }
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (items.isEmpty) {
+      return _message(
+        icon: Icons.bookmark_add_outlined,
+        title: 'Belum ada yang disimpan',
+        detail: 'Dari YouTube, TikTok, atau browser, tekan Share lalu pilih Fetch. '
+            'Atau tekan + untuk menempel link.',
+      );
+    }
+
+    // Kategori yang dipilih bisa hilang (item terakhirnya dihapus/diedit).
+    final category = items.any((it) => it.category == _category) ? _category : null;
+    final visible = category == null ? items : items.where((it) => it.category == category).toList();
+
+    return Column(children: [
+      _categoryChips(items),
+      const Divider(height: 1),
+      Expanded(
+        child: ListView.builder(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.only(bottom: 88), // ruang untuk FAB
+          itemCount: visible.length,
+          itemBuilder: (context, i) => ItemTile(
+            key: ValueKey(visible[i].id),
+            apiClient: widget.apiClient,
+            item: visible[i],
+            onChanged: _replace,
+            onDeleted: _remove,
+          ),
+        ),
+      ),
+    ]);
   }
 
   @override
@@ -142,55 +301,20 @@ class HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Fetch'),
+        bottom: _loading && _items != null
+            ? const PreferredSize(preferredSize: Size.fromHeight(2), child: LinearProgressIndicator(minHeight: 2))
+            : null,
         actions: [
-          IconButton(
-            onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => SearchScreen(apiClient: widget.apiClient))),
-            icon: const Icon(Icons.search),
-          ),
-          IconButton(onPressed: _logout, icon: const Icon(Icons.logout)),
+          IconButton(onPressed: _openSearch, tooltip: 'Cari', icon: const Icon(Icons.search)),
+          IconButton(onPressed: _logout, tooltip: 'Keluar', icon: const Icon(Icons.logout)),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: () async => refresh(),
-        child: FutureBuilder<List<Item>>(
-          future: _future,
-          builder: (context, snapshot) {
-            // Spinner cuma untuk muat pertama. Saat polling/refresh, FutureBuilder
-            // masih menyimpan data sebelumnya -- tampilkan itu supaya tidak berkedip.
-            if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            if (snapshot.hasError && !snapshot.hasData) {
-              return Center(child: Text('Gagal memuat: ${snapshot.error}'));
-            }
-            final items = snapshot.data!;
-            if (items.isEmpty) {
-              return LayoutBuilder(
-                builder: (context, _) => ListView(
-                  children: const [
-                    SizedBox(height: 120),
-                    Center(child: Text('Belum ada yang disimpan.')),
-                  ],
-                ),
-              );
-            }
-            return ListView.builder(
-              itemCount: items.length,
-              itemBuilder: (context, i) {
-                final item = items[i];
-                return ListTile(
-                  title: Text(item.displayTitle, maxLines: 2, overflow: TextOverflow.ellipsis),
-                  subtitle: _subtitle(item),
-                  isThreeLine: item.summary != null,
-                  onTap: () => openLink(context, item.url),
-                );
-              },
-            );
-          },
-        ),
+      body: RefreshIndicator(onRefresh: refresh, child: _body()),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _addManually,
+        tooltip: 'Simpan link',
+        child: const Icon(Icons.add),
       ),
-      floatingActionButton: FloatingActionButton(onPressed: _addManually, child: const Icon(Icons.add)),
     );
   }
 }
