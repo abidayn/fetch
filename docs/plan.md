@@ -465,17 +465,42 @@ task "Set Root Directory ke `backend`" di §5.3.
 
 #### Fakta repo yang membentuk task di §5.0–5.7
 
+**Dipilih: Render, region Singapore, lewat Docker.**
+
+**Amandemen (2026-09-22) — DB juga dipindah ke Singapore, sebelum deploy.**
+Catatan di atas awalnya menerima ± 90–100 ms/query Render(Singapore)↔DB(Sydney)
+sebagai "cukup baik". Setelah dianalisis ulang, itu ongkos yang salah untuk
+diterima secara permanen: latensi itu bukan cuma soal `/search` (yang memang
+didominasi panggilan Gemini 0,5–20 detik, jadi 90 ms tidak terasa) — ia juga
+kena ke **setiap** `POST /items` (simpan awal), `GET /items`, `DELETE`, dan
+login, yaitu operasi yang murni DB tanpa AI dan terjadi berkali-kali di setiap
+sesi. Menerimanya berarti membayar pajak itu selamanya di setiap ketukan.
+
+Karena project Supabase sekarang cuma berisi data uji (~25–30 baris, akun
+`rag-test` + beberapa item manual — tidak ada user asli), biaya pindah hari
+ini nyaris nol. Menunda pindah sampai ada data user sungguhan akan jauh lebih
+berisiko. Maka: **buat project Supabase baru di `ap-southeast-1` (Singapore),
+migrasi data, lalu deploy ke Render langsung dengan `DATABASE_URL` Singapore**
+— supaya tidak perlu deploy dua kali. Task-nya di §5.0 di bawah, **sebelum**
+§5.1, karena tidak bergantung pada git dan environment variable Render (§5.3)
+butuh nilai `DATABASE_URL` yang sudah final.
+
+Efek samping yang perlu diketahui, di luar soal region: project Supabase
+gratis **otomatis pause setelah 1 minggu tidak dipakai** (beda dari, dan di
+luar, soal tidurnya Render setelah 15 menit idle). Kalau app tidak disentuh
+seminggu, siap-siap ada dua lapis "bangun tidur", bukan cuma satu.
+
+**Fakta repo yang membentuk task di bawah** (dicek 2026-09-21, diperbarui 2026-09-22):
 - Python lokal **3.14** → Dockerfile memakai image `python:3.14-slim` supaya
   versinya sama persis dengan yang sudah teruji.
 - `DATABASE_URL` memakai **Supavisor session pooler**, bukan koneksi direct.
-  Ini penting: koneksi *direct* Supabase (`db.<ref>.supabase.co`) hanya
-  IPv6, dan kebanyakan PaaS gratis (termasuk Railway) tidak mendukung IPv6
-  keluar. Project Singapore juga wajib pakai pooler (host-nya
-  `aws-0-ap-southeast-1...` — dengan **-1** bukan **-2** yang Sydney,
-  gampang tersalah-baca).
-- Folder `FETCH/` sudah jadi git repo dan sudah di-push ke GitHub (§5.1).
-- Dev dan production tetap memakai **satu database Supabase yang sama**
-  (Singapore) — bukan DB production terpisah.
+  Ini penting: koneksi *direct* Supabase (`db.<ref>.supabase.co`) hanya IPv6,
+  dan Render tidak mendukung IPv6 keluar. Project baru di Singapore juga wajib
+  pakai pooler (host-nya akan berubah dari `aws-0-ap-southeast-2...` jadi
+  `aws-0-ap-southeast-1...` — dengan **-1** bukan **-2**, gampang tersalah-baca).
+- Folder `FETCH/` sudah jadi git repo dan sudah di-push ke GitHub (lihat §5.1).
+- Dev dan production akan tetap memakai **satu database Supabase yang sama**
+  (yang baru, Singapore) — bukan DB production terpisah.
 - Kuota Gemini gratis (20 request/hari/model untuk klasifikasi) **dipakai
   bersama** oleh laptop dan server karena API key-nya sama.
 
