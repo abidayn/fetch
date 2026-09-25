@@ -1,25 +1,35 @@
 """
-Proses ulang item yang belum selesai diperkaya.
+Re-process items whose enrichment didn't finish.
 
-Menangkap dua kasus (lihat "NULL = antrian kerja" di docs/data-model.md):
-- raw_content IS NULL                      -> belum pernah diproses
-  (item dari sebelum Fase 3, atau server mati saat background task jalan)
-- summary IS NULL AND raw_content != ''    -> punya isi, tapi Gemini gagal
-  (mis. 503 yang tetap gagal setelah retry)
+Catches two cases (see "NULL = work queue" in docs/data-model.md):
+- raw_content IS NULL                      -> never processed
+  (e.g. the server died while the background task was running)
+- summary IS NULL AND raw_content != ''    -> has content, but Gemini failed
+  (e.g. a 503 that still failed after retries)
 
-Item dengan raw_content == '' (memang tidak ada isi, contoh post privat)
-sengaja TIDAK diulang -- hasilnya akan tetap kosong.
+Items with raw_content == '' (genuinely no content, e.g. a private post) are
+deliberately NOT retried -- the result would still be empty.
 
---ids : proses ulang item tertentu DARI NOL, apa pun statusnya. Untuk item
-        yang "berhasil" tapi isinya salah -- mis. ringkasan tentang YouTube
-        generik karena ekstraksi dulu diblokir -- atau raw_content == '' yang
-        sekarang bisa dibaca setelah extraction.py diperbaiki. Title, summary,
-        dan kategori ikut dihapus dulu (termasuk editan user, kalau ada):
-        tanpa itu, kalau Gemini gagal lagi, nilai lama yang salah tetap tinggal.
+--ids        : re-process specific items FROM SCRATCH, whatever their state.
+               For items that "succeeded" but hold the wrong content -- e.g. a
+               summary of generic YouTube text because extraction used to be
+               blocked -- or raw_content == '' that can be read now after an
+               extraction.py fix. Title, summary and category are cleared
+               first (including user edits, if any): otherwise, if Gemini
+               fails again, the old wrong values would stay.
+
+--reclassify : re-run ONLY the Gemini classification (+ embedding) for every
+               item that has content, from the stored raw_content -- no
+               re-scraping. For prompt or model changes (e.g. switching the
+               summary language). Overwrites title/summary/category,
+               including user edits. Uses one classification call per item,
+               so mind the daily free-tier quota; items that fail keep their
+               old values and can be retried by running this again.
 
 Usage:
     venv/Scripts/python.exe backfill_enrichment.py
     venv/Scripts/python.exe backfill_enrichment.py --ids <uuid> [<uuid> ...]
+    venv/Scripts/python.exe backfill_enrichment.py --reclassify
 """
 
 import logging
@@ -28,7 +38,9 @@ import uuid
 
 from sqlalchemy import and_, or_, select
 
+from classifier import classify
 from database import SessionLocal
+from embeddings import embed_one, embedding_text
 from enrichment import enrich_item
 from models import SavedItem
 
@@ -53,7 +65,7 @@ def reprocess(ids: list[uuid.UUID]):
         with SessionLocal() as db:
             item = db.get(SavedItem, item_id)
             if item is None:
-                print(f"[{i}/{len(ids)}] {item_id} tidak ditemukan, dilewati")
+                print(f"[{i}/{len(ids)}] {item_id} not found, skipped")
                 continue
             item.raw_content = item.title = item.summary = item.category = None
             item.embedding = None
@@ -62,20 +74,46 @@ def reprocess(ids: list[uuid.UUID]):
         enrich_item(item_id)
         with SessionLocal() as db:
             item = db.get(SavedItem, item_id)
-            print(f"    -> title={item.title!r} category={item.category!r} ada_isi={item.has_content}")
+            print(f"    -> title={item.title!r} category={item.category!r} has_content={item.has_content}")
+
+
+def reclassify():
+    with SessionLocal() as db:
+        items = db.scalars(
+            select(SavedItem).where(SavedItem.raw_content != "").order_by(SavedItem.created_at)
+        ).all()
+        print(f"{len(items)} items to reclassify")
+        failed = 0
+        for i, item in enumerate(items, 1):
+            result = classify(item.url, item.platform or "generic", item.raw_content)
+            if result is None:
+                # Old values stay (still better than nothing); rerun later.
+                failed += 1
+                print(f"[{i}/{len(items)}] {item.id} classification failed, kept as is")
+                continue
+            item.title, item.summary, item.category = result.title, result.summary, result.category
+            vector = embed_one(embedding_text(item.title, item.summary))
+            if vector is not None:
+                item.embedding = vector
+            db.commit()  # per item: a later failure doesn't lose earlier progress
+            print(f"[{i}/{len(items)}] {item.title!r} ({item.category})")
+        print(f"done. {failed} failed (run again later)" if failed else "done.")
 
 
 def main():
     if "--ids" in sys.argv:
         reprocess([uuid.UUID(a) for a in sys.argv[sys.argv.index("--ids") + 1 :]])
         return
+    if "--reclassify" in sys.argv:
+        reclassify()
+        return
 
     ids = pending_ids()
-    print(f"{len(ids)} item perlu diproses")
+    print(f"{len(ids)} items need processing")
     for i, item_id in enumerate(ids, 1):
         print(f"[{i}/{len(ids)}] {item_id}")
-        # Untuk kasus "AI gagal", reset raw_content supaya enrich_item
-        # memproses dari awal (ekstraksi ulang + klasifikasi ulang).
+        # For the "AI failed" case, reset raw_content so enrich_item processes
+        # from scratch (re-extract + re-classify).
         with SessionLocal() as db:
             item = db.get(SavedItem, item_id)
             if item is not None and item.raw_content:
@@ -83,7 +121,7 @@ def main():
                 db.commit()
         enrich_item(item_id)
     left = len(pending_ids())
-    print(f"selesai. tersisa {left} item yang masih gagal (jalankan ulang nanti)")
+    print(f"done. {left} items still failing (run again later)")
 
 
 if __name__ == "__main__":

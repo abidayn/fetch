@@ -1,14 +1,14 @@
-// Smoke test bawaan flutter create sudah tidak relevan (referensinya ke
-// MyApp/counter yang sudah dihapus).
+// The default `flutter create` smoke test no longer applied (it referenced
+// the MyApp/counter that has been removed).
 //
-// Kenapa cuma pump() sekali, bukan pumpAndSettle(): flutter test jalan di
-// Dart VM tanpa platform Android sungguhan, jadi panggilan platform channel
-// (flutter_secure_storage buat baca token, receive_sharing_intent buat cek
-// share masuk) tidak punya handler asli dan menggantung selamanya tanpa
-// mocking eksplisit. Ditambah CircularProgressIndicator yang berputar terus
-// selama itu -- pumpAndSettle() tidak akan pernah selesai menunggu animasi
-// berhenti. Untuk smoke test (app harus bisa di-build tanpa exception),
-// satu pump() sudah cukup buktikan widget tree valid.
+// Why a single pump() rather than pumpAndSettle(): flutter test runs in the
+// Dart VM without a real Android platform, so platform-channel calls
+// (flutter_secure_storage reading the token, receive_sharing_intent checking
+// for incoming shares) have no real handler and hang forever without
+// explicit mocking. On top of that a CircularProgressIndicator keeps spinning
+// the whole time -- pumpAndSettle() would never finish waiting for the
+// animation to stop. For a smoke test (the app must build without an
+// exception), one pump() is enough to prove the widget tree is valid.
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:mobile/main.dart';

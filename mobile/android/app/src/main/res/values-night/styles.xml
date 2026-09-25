@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Sama seperti values/styles.xml (mode terang); lihat catatan di sana
-         soal Theme.SplashScreen dan BLOKIR-D. -->
+    <!-- Same as values/styles.xml (light mode); see the note there about
+         Theme.SplashScreen and the share-sheet cold-start freeze. -->
     <style name="LaunchTheme" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@android:color/black</item>
         <item name="postSplashScreenTheme">@style/NormalTheme</item>

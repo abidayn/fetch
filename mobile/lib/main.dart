@@ -26,17 +26,17 @@ class FetchApp extends StatefulWidget {
 class _FetchAppState extends State<FetchApp> {
   StreamSubscription? _shareSub;
 
-  // Key ke HomeScreen supaya bisa panggil refresh() dari sini kalau link
-  // baru masuk sementara HomeScreen sedang ditampilkan. Tanpa ini butuh
-  // state management library cuma buat komunikasi 1 arah yang jarang terjadi.
+  // Key to HomeScreen so refresh() can be called from here when a new link
+  // arrives while HomeScreen is showing. Without it we'd need a state
+  // management library just for rare one-way communication.
   final _homeKey = GlobalKey<HomeScreenState>();
 
-  // Share datang dari luar pohon widget (callback plugin), jadi tidak ada
-  // BuildContext di tangan. Key ini memberi akses ke Navigator milik
-  // MaterialApp untuk menampilkan sheet "Saved" dari sini.
+  // Shares arrive from outside the widget tree (a plugin callback), so there's
+  // no BuildContext at hand. This key gives access to MaterialApp's Navigator
+  // to show the "Saved" sheet from here.
   final _navigatorKey = GlobalKey<NavigatorState>();
 
-  // Alasan yang sama: snackbar "gagal simpan" dari luar pohon widget.
+  // Same reason: the "save failed" snackbar from outside the widget tree.
   final _messengerKey = GlobalKey<ScaffoldMessengerState>();
 
   @override
@@ -46,17 +46,17 @@ class _FetchAppState extends State<FetchApp> {
   }
 
   void _listenForSharedLinks() {
-    // "Warm": app sedang kebuka (foreground/background) waktu user share.
+    // "Warm": the app is already open (foreground/background) when the user shares.
     _shareSub = ReceiveSharingIntent.instance.getMediaStream().listen(
       _handleSharedFiles,
       onError: (err) => debugPrint('Share stream error: $err'),
     );
 
-    // "Cold start": app belum jalan sama sekali, dibuka LEWAT aksi share.
-    // Ini kenapa harus dicek terpisah dari stream di atas -- stream cuma
-    // menangkap share yang terjadi SETELAH app hidup dan listener terpasang;
-    // share yang justru menyalakan app pertama kali akan terlewat kalau
-    // cuma mengandalkan stream.
+    // "Cold start": the app isn't running at all and is launched BY the share.
+    // That's why it's checked separately from the stream above -- the stream
+    // only catches shares that happen AFTER the app is alive and the listener
+    // is attached; the share that launched the app would be missed if we
+    // relied on the stream alone.
     ReceiveSharingIntent.instance.getInitialMedia().then(_handleSharedFiles);
   }
 
@@ -64,16 +64,16 @@ class _FetchAppState extends State<FetchApp> {
     if (files.isEmpty) return;
     final url = files.first.path;
 
-    // reset() wajib dipanggil -- tanpa ini, share yang sama akan terbaca
-    // ULANG oleh getInitialMedia() setiap kali app dibuka lagi, bukan cuma
-    // sekali waktu itu terjadi.
+    // reset() must be called -- without it, the same share is read AGAIN by
+    // getInitialMedia() every time the app is reopened, not just once when
+    // it happened.
     ReceiveSharingIntent.instance.reset();
 
     if (!await widget.apiClient.hasToken()) {
-      // Belum login -- tidak ada tempat aman untuk simpan link ini. MVP
-      // sengaja tidak antre link untuk disimpan nanti; user share ulang
-      // setelah login. Tapi user harus TAHU link-nya tidak tersimpan.
-      await _showMessage('Masuk dulu, lalu share link-nya lagi.');
+      // Not logged in -- there's nowhere safe to save this link. Links are
+      // deliberately not queued for later; the user shares again after
+      // logging in. But the user must KNOW the link wasn't saved.
+      await _showMessage('Log in first, then share the link again.');
       return;
     }
     await _saveShared(url);
@@ -85,10 +85,10 @@ class _FetchAppState extends State<FetchApp> {
       _homeKey.currentState?.refresh();
       await _showSavedSheet(item);
     } on ApiException catch (e) {
-      // Tanpa ini, share yang gagal (server tidur, offline) hilang diam-diam
-      // dan user mengira link-nya sudah tersimpan.
-      await _showMessage('Gagal menyimpan link: ${e.message}',
-          action: SnackBarAction(label: 'Coba lagi', onPressed: () => _saveShared(url)));
+      // Without this, a failed share (server asleep, offline) disappears
+      // silently and the user thinks the link was saved.
+      await _showMessage("Couldn't save the link: ${e.message}",
+          action: SnackBarAction(label: 'Try again', onPressed: () => _saveShared(url)));
     }
   }
 
@@ -99,8 +99,8 @@ class _FetchAppState extends State<FetchApp> {
     );
   }
 
-  /// Cold start: share bisa diproses sebelum MaterialApp selesai membangun
-  /// Navigator-nya. Tunggu sebentar (maks ~5 detik) sampai siap.
+  /// Cold start: the share can be handled before MaterialApp has finished
+  /// building its Navigator. Wait a little (max ~5 seconds) until it's ready.
   Future<void> _waitForApp() async {
     for (var i = 0; i < 25 && _navigatorKey.currentContext == null; i++) {
       await Future.delayed(const Duration(milliseconds: 200));
@@ -112,7 +112,7 @@ class _FetchAppState extends State<FetchApp> {
     final ctx = _navigatorKey.currentContext;
     if (ctx == null || !ctx.mounted) return;
     await showSaveResultSheet(ctx, widget.apiClient, item);
-    _homeKey.currentState?.refresh(); // pastikan hasil akhir tampil di daftar
+    _homeKey.currentState?.refresh(); // make sure the final result shows in the list
   }
 
   @override
@@ -128,9 +128,9 @@ class _FetchAppState extends State<FetchApp> {
       scaffoldMessengerKey: _messengerKey,
       title: 'Fetch',
       theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
-      // FutureBuilder dipakai di root, bukan cuma langsung tampilkan
-      // LoginScreen -- supaya kalau token TERSIMPAN dari sesi sebelumnya,
-      // user tidak perlu login ulang tiap buka app.
+      // FutureBuilder at the root, rather than always showing LoginScreen --
+      // so if a token is STORED from a previous session, the user doesn't
+      // have to log in again every time they open the app.
       home: FutureBuilder<bool>(
         future: widget.apiClient.hasToken(),
         builder: (context, snapshot) {

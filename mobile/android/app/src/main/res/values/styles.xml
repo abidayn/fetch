@@ -1,16 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- LaunchTheme sekarang extend Theme.SplashScreen (dari androidx
-         core-splashscreen), bukan Theme.Light.NoTitleBar langsung. Ini
-         dipasang untuk mengatasi BLOKIR-D (docs/plan.md): splash macet
-         permanen kalau app di-cold-start lewat share-sheet (ACTION_SEND).
-         Diagnosis: mekanisme auto-dismiss splash bawaan Flutter (deteksi
-         first-frame implisit) tidak selalu terpicu benar kalau Activity
-         dibuat lewat trampoline chooser Android, bukan tap launcher biasa.
-         Theme.SplashScreen + installSplashScreen() di MainActivity.kt
-         memberi kontrol eksplisit lewat setKeepOnScreenCondition, yang
-         terikat ke sinyal draw-pertama Activity di level Android, bukan
-         ke deteksi Flutter yang ternyata tidak selalu terpicu itu. -->
+    <!-- LaunchTheme extends Theme.SplashScreen (from androidx
+         core-splashscreen), not Theme.Light.NoTitleBar directly. This fixes
+         the splash screen freezing permanently when the app is cold-started
+         from the share sheet (ACTION_SEND) -- see "Gotchas" in CLAUDE.md.
+         Diagnosis: Flutter's built-in splash auto-dismiss (implicit
+         first-frame detection) doesn't reliably fire when the Activity is
+         created via Android's chooser trampoline instead of a launcher tap.
+         Theme.SplashScreen + installSplashScreen() in MainActivity.kt give
+         explicit control tied to the Activity's first draw at the Android
+         level, rather than to Flutter's detection that doesn't always fire. -->
     <style name="LaunchTheme" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@android:color/white</item>
         <item name="postSplashScreenTheme">@style/NormalTheme</item>

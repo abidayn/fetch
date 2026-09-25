@@ -1,8 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Dibutuhkan supaya app bisa panggil backend. Manifest debug/ sudah
-         punya ini tapi cuma untuk keperluan tooling Flutter (hot reload dkk).
-         Manifest utama ini yang dipakai APK release, jadi permission
-         beneran harus eksplisit di sini juga. -->
+    <!-- Needed so the app can call the backend. The debug/ manifest already
+         has this, but only for Flutter tooling (hot reload etc.). This main
+         manifest is what the release APK uses, so the permission really has
+         to be declared here as well. -->
     <uses-permission android:name="android.permission.INTERNET"/>
 
     <application
@@ -31,9 +31,9 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
 
-            <!-- Share-sheet: menerima link yang di-share dari app lain
-                 (YouTube/TikTok/Instagram/browser) sebagai teks polos.
-                 Ditangkap oleh package receive_sharing_intent. -->
+            <!-- Share sheet: receive links shared from other apps
+                 (YouTube/TikTok/Instagram/browser) as plain text.
+                 Picked up by the receive_sharing_intent package. -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -56,10 +56,10 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
-        <!-- url_launcher: sejak Android 11 (package visibility), app harus
-             mendeklarasikan intent apa yang ingin ia "lihat". Tanpa ini,
-             pengecekan apakah ada app yang bisa membuka link https bisa
-             menjawab "tidak ada" walau browser/YouTube terpasang. -->
+        <!-- url_launcher: since Android 11 (package visibility), an app has to
+             declare which intents it wants to "see". Without this, checking
+             whether any app can open an https link can answer "none" even
+             when a browser/YouTube is installed. -->
         <intent>
             <action android:name="android.intent.action.VIEW"/>
             <data android:scheme="https"/>

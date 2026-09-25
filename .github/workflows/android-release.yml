@@ -1,13 +1,14 @@
-# Build APK release lalu terbitkan ke GitHub Releases, supaya beta tester bisa
-# unduh langsung dari:
+# Build a release APK and publish it to GitHub Releases, so beta testers can
+# download it directly from:
 #   https://github.com/abidayn/fetch/releases/latest/download/app-release.apk
 #
-# Jalan saat tag versi di-push (git tag v0.6.0 && git push origin v0.6.0),
-# atau manual dari tab Actions (hasilnya cuma jadi artifact, bukan Release).
+# Runs when a version tag is pushed (git tag v0.7.1 && git push origin v0.7.1),
+# or manually from the Actions tab (then it's only an artifact, not a Release).
 #
-# Butuh di Settings -> Secrets and variables -> Actions:
+# Needs, under Settings -> Secrets and variables -> Actions:
 #   secrets  : ANDROID_KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
-#   variables: API_BASE_URL (URL backend production, tanpa "/" di akhir)
+#   variables: API_BASE_URL (production backend URL, no trailing "/")
+# Full walkthrough: docs/operations.md, "Releasing the Android app".
 name: Android release APK
 
 on:
@@ -16,7 +17,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # membuat Release + upload APK
+  contents: write # create the Release + upload the APK
 
 jobs:
   build:
@@ -27,18 +28,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cek secret & variable lengkap
+      - name: Check secrets & variables are set
         env:
           KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           API_BASE_URL: ${{ vars.API_BASE_URL }}
-        # Tanpa cek ini, keystore kosong membuat Gradle diam-diam jatuh ke
-        # debug key -- APK tetap jadi, tapi tidak bisa menimpa versi lama di HP.
+        # Without this check, an empty keystore makes Gradle silently fall back
+        # to the debug key -- the APK still builds, but can't update the old one on phones.
         run: |
           for v in KEYSTORE KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD API_BASE_URL; do
-            if [ -z "${!v}" ]; then echo "::error::$v belum diisi di repo settings"; exit 1; fi
+            if [ -z "${!v}" ]; then echo "::error::$v is not set in the repo settings"; exit 1; fi
           done
 
       - uses: actions/setup-java@v4
@@ -48,17 +49,17 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.44.6' # samakan dengan versi di laptop
+          flutter-version: '3.44.6' # keep in sync with the local Flutter version
           channel: stable
           cache: true
 
       - run: flutter pub get
 
-      - name: Pasang keystore release
+      - name: Install the release keystore
         run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/release.jks
 
-      # --build-number naik tiap run: Android menolak APK dengan versionCode
-      # yang tidak lebih besar dari versi terpasang.
+      # --build-number goes up every run: Android rejects an APK whose
+      # versionCode isn't higher than the installed version's.
       - name: Build APK
         run: >
           flutter build apk --release
@@ -69,13 +70,13 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
-      - name: Simpan APK sebagai artifact
+      - name: Save the APK as an artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-release
           path: mobile/build/app/outputs/flutter-apk/app-release.apk
 
-      - name: Terbitkan Release
+      - name: Publish the Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:

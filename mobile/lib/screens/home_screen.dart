@@ -18,25 +18,25 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => HomeScreenState();
 }
 
-/// State di-expose (bukan diawali `_`) supaya main.dart bisa manggil
-/// `refresh()` dari GlobalKey ketika ada link baru masuk lewat share-sheet,
-/// tanpa perlu state management library buat satu kasus ini.
+/// The State is exposed (not prefixed with `_`) so main.dart can call
+/// `refresh()` through a GlobalKey when a new link arrives via the share
+/// sheet, without needing a state management library for this one case.
 class HomeScreenState extends State<HomeScreen> {
-  // State eksplisit, bukan FutureBuilder: edit & hapus mengubah list di
-  // tempat (tanpa muat ulang semua), dan gagal-refresh saat data lama masih
-  // ada cukup jadi snackbar -- bukan mengganti seluruh layar dengan error.
+  // Explicit state, not a FutureBuilder: edit & delete change the list in
+  // place (without reloading everything), and a failed refresh while old data
+  // is still there is just a snackbar -- not an error replacing the whole screen.
   List<Item>? _items;
   ApiException? _error;
   bool _loading = false;
 
-  // null = "Semua". Browse per kategori disaring di sisi app: semua item
-  // user sudah dimuat untuk daftar ini, jadi tidak perlu request lagi.
+  // null = "All". Browsing by category is filtered in the app: all of the
+  // user's items are already loaded for this list, so no extra request.
   String? _category;
 
-  // Pengayaan AI jalan di background 5-10 detik SETELAH item disimpan, jadi
-  // item baru awalnya tampil "memproses". Selama masih ada item yang belum
-  // diproses, list dimuat ulang tiap 4 detik -- dibatasi 10x (~40 detik)
-  // supaya tidak polling selamanya kalau server bermasalah.
+  // AI enrichment runs in the background for 5-10 seconds AFTER an item is
+  // saved, so a new item first shows as "processing". While any item is
+  // unprocessed, the list reloads every 4 seconds -- capped at 10 times
+  // (~40 seconds) so it doesn't poll forever if the server has problems.
   static const _pollInterval = Duration(seconds: 4);
   static const _maxPolls = 10;
   Timer? _pollTimer;
@@ -73,15 +73,15 @@ class HomeScreenState extends State<HomeScreen> {
       if (_items == null || e.isUnauthorized) {
         setState(() => _error = e);
       } else if (!fromPoll) {
-        // Data lama masih berguna -- cukup kabari, jangan kosongkan layar.
+        // The old data is still useful -- just say so, don't blank the screen.
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Gagal memperbarui: ${e.message}')),
+          SnackBar(content: Text("Couldn't refresh: ${e.message}")),
         );
       }
     } finally {
       if (mounted) {
         setState(() => _loading = false);
-        // Di finally: poll yang gagal (jaringan sesaat) tetap dijadwalkan ulang.
+        // In finally: a failed poll (brief network drop) is still rescheduled.
         _schedulePollIfPending();
       }
     }
@@ -113,14 +113,14 @@ class HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Form manual "tempel link" -- jalur cadangan kalau app asal tidak punya
-  /// tombol share ke Fetch, dan berguna buat testing.
+  /// Manual "paste a link" form -- a fallback when the source app has no
+  /// share-to-Fetch button, and handy for testing.
   Future<void> _addManually() async {
     final ctrl = TextEditingController();
     final url = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Simpan link'),
+        title: const Text('Save a link'),
         content: TextField(
           controller: ctrl,
           decoration: const InputDecoration(hintText: 'https://...'),
@@ -129,9 +129,9 @@ class HomeScreenState extends State<HomeScreen> {
           onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Batal')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           FilledButton(
-              onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: const Text('Simpan')),
+              onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: const Text('Save')),
         ],
       ),
     );
@@ -141,7 +141,7 @@ class HomeScreenState extends State<HomeScreen> {
 
   Future<void> _save(String url) async {
     final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(const SnackBar(content: Text('Menyimpan…'), duration: Duration(seconds: 30)));
+    messenger.showSnackBar(const SnackBar(content: Text('Saving…'), duration: Duration(seconds: 30)));
     try {
       final item = Item.fromJson(await widget.apiClient.createItem(url));
       messenger.hideCurrentSnackBar();
@@ -151,11 +151,11 @@ class HomeScreenState extends State<HomeScreen> {
       refresh();
     } on ApiException catch (e) {
       messenger.hideCurrentSnackBar();
-      // POST tidak diulang otomatis (bisa dobel), jadi user yang memutuskan.
+      // The POST isn't retried automatically (it could save twice), so the user decides.
       messenger.showSnackBar(SnackBar(
-        content: Text('Gagal menyimpan: ${e.message}'),
+        content: Text("Couldn't save: ${e.message}"),
         duration: const Duration(seconds: 8),
-        action: SnackBarAction(label: 'Coba lagi', onPressed: () => _save(url)),
+        action: SnackBarAction(label: 'Try again', onPressed: () => _save(url)),
       ));
     }
   }
@@ -175,13 +175,13 @@ class HomeScreenState extends State<HomeScreen> {
   void _openSearch() {
     Navigator.of(context)
         .push(MaterialPageRoute(builder: (_) => SearchScreen(apiClient: widget.apiClient)))
-        // Item bisa diedit/dihapus dari layar cari -- samakan saat kembali.
+        // Items can be edited/deleted from the search screen -- resync on return.
         .then((_) => refresh());
   }
 
-  /// Chip kategori yang benar-benar dipakai user, urut dari yang paling
-  /// banyak isinya. Kategori kosong tidak ditampilkan -- chip yang selalu
-  /// menghasilkan layar kosong cuma bikin bingung.
+  /// Chips for the categories the user actually has, largest first. Empty
+  /// categories aren't shown -- a chip that always leads to an empty screen
+  /// only confuses.
   Widget _categoryChips(List<Item> items) {
     final counts = <String, int>{};
     for (final it in items) {
@@ -198,7 +198,7 @@ class HomeScreenState extends State<HomeScreen> {
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: ChoiceChip(
-              label: Text('Semua (${items.length})'),
+              label: Text('All (${items.length})'),
               selected: _category == null,
               onSelected: (_) => setState(() => _category = null),
             ),
@@ -217,7 +217,7 @@ class HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Pesan di tengah layar yang tetap bisa ditarik untuk refresh.
+  /// A centred message that can still be pulled to refresh.
   Widget _message({required IconData icon, required String title, String? detail, Widget? action}) {
     final theme = Theme.of(context);
     return ListView(
@@ -243,21 +243,21 @@ class HomeScreenState extends State<HomeScreen> {
     if (error != null && error.isUnauthorized) {
       return _message(
         icon: Icons.lock_outline,
-        title: 'Sesi sudah berakhir',
-        detail: 'Masuk lagi untuk melihat item tersimpan.',
-        action: FilledButton(onPressed: _logout, child: const Text('Masuk lagi')),
+        title: 'Your session has expired',
+        detail: 'Log in again to see your saved items.',
+        action: FilledButton(onPressed: _logout, child: const Text('Log in again')),
       );
     }
     if (items == null) {
       if (error != null) {
         return _message(
           icon: Icons.cloud_off,
-          title: 'Gagal memuat',
+          title: "Couldn't load your items",
           detail: error.message,
           action: FilledButton.icon(
             onPressed: _loading ? null : refresh,
             icon: const Icon(Icons.refresh),
-            label: const Text('Coba lagi'),
+            label: const Text('Try again'),
           ),
         );
       }
@@ -266,13 +266,13 @@ class HomeScreenState extends State<HomeScreen> {
     if (items.isEmpty) {
       return _message(
         icon: Icons.bookmark_add_outlined,
-        title: 'Belum ada yang disimpan',
-        detail: 'Dari YouTube, TikTok, atau browser, tekan Share lalu pilih Fetch. '
-            'Atau tekan + untuk menempel link.',
+        title: 'Nothing saved yet',
+        detail: 'In YouTube, TikTok, or your browser, tap Share and choose Fetch. '
+            'Or tap + to paste a link.',
       );
     }
 
-    // Kategori yang dipilih bisa hilang (item terakhirnya dihapus/diedit).
+    // The selected category can disappear (its last item was deleted/edited).
     final category = items.any((it) => it.category == _category) ? _category : null;
     final visible = category == null ? items : items.where((it) => it.category == category).toList();
 
@@ -282,7 +282,7 @@ class HomeScreenState extends State<HomeScreen> {
       Expanded(
         child: ListView.builder(
           physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.only(bottom: 88), // ruang untuk FAB
+          padding: const EdgeInsets.only(bottom: 88), // room for the FAB
           itemCount: visible.length,
           itemBuilder: (context, i) => ItemTile(
             key: ValueKey(visible[i].id),
@@ -305,14 +305,14 @@ class HomeScreenState extends State<HomeScreen> {
             ? const PreferredSize(preferredSize: Size.fromHeight(2), child: LinearProgressIndicator(minHeight: 2))
             : null,
         actions: [
-          IconButton(onPressed: _openSearch, tooltip: 'Cari', icon: const Icon(Icons.search)),
-          IconButton(onPressed: _logout, tooltip: 'Keluar', icon: const Icon(Icons.logout)),
+          IconButton(onPressed: _openSearch, tooltip: 'Search', icon: const Icon(Icons.search)),
+          IconButton(onPressed: _logout, tooltip: 'Log out', icon: const Icon(Icons.logout)),
         ],
       ),
       body: RefreshIndicator(onRefresh: refresh, child: _body()),
       floatingActionButton: FloatingActionButton(
         onPressed: _addManually,
-        tooltip: 'Simpan link',
+        tooltip: 'Save a link',
         child: const Icon(Icons.add),
       ),
     );

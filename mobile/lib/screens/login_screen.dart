@@ -32,12 +32,12 @@ class _LoginScreenState extends State<LoginScreen> {
           builder: (_) => HomeScreen(key: widget.homeKey, apiClient: widget.apiClient)),
       );
     } on ApiException catch (e) {
-      // Pesan dari backend (mis. "Email atau password salah.") ditampilkan
-      // apa adanya -- itu sudah sengaja dibuat aman untuk dilihat user
-      // (lihat routers/auth.py: pesan login sengaja disamakan).
+      // The backend's message (e.g. "Incorrect email or password.") is shown
+      // as is -- it's deliberately written to be safe for the user to see
+      // (see routers/auth.py: the login messages are deliberately identical).
       setState(() => _error = e.message);
     } catch (e) {
-      setState(() => _error = 'Tidak bisa terhubung ke server.');
+      setState(() => _error = "Can't reach the server.");
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -46,7 +46,7 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Masuk')),
+      appBar: AppBar(title: const Text('Log in')),
       body: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
@@ -75,14 +75,14 @@ class _LoginScreenState extends State<LoginScreen> {
               child: _loading
                   ? const SizedBox(
                       height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Text('Masuk'),
+                  : const Text('Log in'),
             ),
             TextButton(
               onPressed: _loading
                   ? null
                   : () => Navigator.of(context).push(MaterialPageRoute(
                       builder: (_) => RegisterScreen(apiClient: widget.apiClient))),
-              child: const Text('Belum punya akun? Daftar'),
+              child: const Text("Don't have an account? Sign up"),
             ),
           ],
         ),

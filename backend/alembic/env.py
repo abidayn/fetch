@@ -11,7 +11,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import DATABASE_URL, Base  # noqa: E402
-import models  # noqa: F401,E402  (import wajib: mendaftarkan tabel ke Base.metadata)
+import models  # noqa: F401,E402  (required import: registers the tables on Base.metadata)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

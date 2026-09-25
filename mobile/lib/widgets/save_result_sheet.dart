@@ -5,11 +5,8 @@ import 'package:flutter/material.dart';
 import '../api/api_client.dart';
 import '../models/item.dart';
 
-/// Tampilkan umpan balik setelah link tersimpan: "Saved — AI is organizing
-/// this…" lalu berubah jadi hasil AI begitu pengayaan di backend selesai.
-///
-/// Copy sengaja Bahasa Inggris (keputusan user, 2026-09-21), walau sisa UI
-/// masih Bahasa Indonesia.
+/// Feedback after a link is saved: "Saved — AI is organizing this…", which
+/// turns into the AI result once enrichment finishes on the backend.
 Future<void> showSaveResultSheet(BuildContext context, ApiClient apiClient, Item item) {
   return showModalBottomSheet<void>(
     context: context,
@@ -28,9 +25,9 @@ class _SaveResultSheet extends StatefulWidget {
 }
 
 class _SaveResultSheetState extends State<_SaveResultSheet> {
-  // Pengayaan normalnya 4-9 detik, tapi bisa ~20 detik kalau Gemini sedang
-  // retry (429/503). Lewat 60 detik, sheet berhenti menunggu -- item tetap
-  // akan ter-update sendiri di daftar home.
+  // Enrichment normally takes 4-9 seconds, but can take ~20 seconds when
+  // Gemini is retrying (429/503). After 60 seconds the sheet stops waiting --
+  // the item still updates itself in the home list.
   static const _pollInterval = Duration(seconds: 3);
   static const _maxWait = Duration(seconds: 60);
 
@@ -61,7 +58,7 @@ class _SaveResultSheetState extends State<_SaveResultSheet> {
       if (!mounted) return;
       setState(() => _item = fresh);
     } catch (_) {
-      // Gangguan jaringan sesaat: coba lagi di putaran berikutnya.
+      // Brief network glitch: try again on the next round.
     }
     if (!mounted || _item.processed) return;
     if (DateTime.now().difference(_started) >= _maxWait) {
@@ -106,8 +103,8 @@ class _SaveResultSheetState extends State<_SaveResultSheet> {
         ),
       );
     } else if (_item.hasContent) {
-      // Isi link terbaca, tapi Gemini gagal (kuota/timeout). Bisa diulang
-      // di backend (backfill_enrichment.py) -- beda dari link tak terbaca.
+      // The link's content was read, but Gemini failed (quota/timeout).
+      // Retryable on the backend (backfill_enrichment.py) -- unlike an unreadable link.
       heading = 'Saved';
       body = Text(
         "Saved, but the AI summary didn't come through this time. "
@@ -115,7 +112,7 @@ class _SaveResultSheetState extends State<_SaveResultSheet> {
         style: theme.textTheme.bodyMedium,
       );
     } else {
-      // Sudah diproses tapi kontennya tidak terbaca (post privat/terhapus, dll).
+      // Processed, but the content couldn't be read (private/deleted post, etc.).
       heading = 'Saved';
       body = Text(
         "Couldn't read much from this link, so it's saved as-is.",

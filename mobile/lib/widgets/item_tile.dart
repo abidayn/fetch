@@ -5,12 +5,13 @@ import '../models/item.dart';
 import '../util/open_link.dart';
 import 'edit_item_sheet.dart';
 
-/// Satu baris item, dipakai di home dan hasil pencarian.
+/// One item row, used on home and in search results.
 ///
-/// Tap = buka link di app asalnya (aksi utama). Edit / hapus ada di menu ⋮,
-/// sengaja tidak di tap/long-press supaya tidak kepencet saat scroll.
-/// [onChanged] dipanggil dengan item baru setelah diedit; [onDeleted]
-/// setelah backend benar-benar menghapus -- pemanggil yang memperbarui list.
+/// Tap = open the link in its source app (the main action). Edit / delete
+/// live in the ⋮ menu, deliberately not on tap/long-press so they aren't hit
+/// while scrolling. [onChanged] is called with the new item after an edit;
+/// [onDeleted] after the backend has actually deleted it -- the caller
+/// updates the list.
 class ItemTile extends StatelessWidget {
   final ApiClient apiClient;
   final Item item;
@@ -31,12 +32,12 @@ class ItemTile extends StatelessWidget {
 
   Widget _subtitle() {
     if (!item.processed) {
-      return const Text('Memproses…', style: TextStyle(fontStyle: FontStyle.italic));
+      return const Text('Processing…', style: TextStyle(fontStyle: FontStyle.italic));
     }
     final meta = [item.category, item.platform].whereType<String>().join(' · ');
     if (item.summary == null) {
-      // Sudah diproses tapi tidak ada isi yang bisa dibaca (mis. Instagram
-      // tanpa login) -- tampilkan apa adanya, bukan "memproses" selamanya.
+      // Processed, but no readable content (e.g. a private post) -- show it
+      // as is, not "processing" forever.
       return Text(meta.isEmpty ? item.url : meta, maxLines: 1, overflow: TextOverflow.ellipsis);
     }
     return Text(
@@ -51,7 +52,7 @@ class ItemTile extends StatelessWidget {
     if (updated == null) return;
     onChanged(updated);
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Perubahan disimpan.')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Changes saved.')));
     }
   }
 
@@ -59,14 +60,14 @@ class ItemTile extends StatelessWidget {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Hapus item?'),
+        title: const Text('Delete this item?'),
         content: Text(item.displayTitle, maxLines: 3, overflow: TextOverflow.ellipsis),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Theme.of(ctx).colorScheme.error),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Hapus'),
+            child: const Text('Delete'),
           ),
         ],
       ),
@@ -77,9 +78,9 @@ class ItemTile extends StatelessWidget {
     try {
       await apiClient.deleteItem(item.id);
       onDeleted(item);
-      messenger.showSnackBar(const SnackBar(content: Text('Item dihapus.')));
+      messenger.showSnackBar(const SnackBar(content: Text('Item deleted.')));
     } on ApiException catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('Gagal menghapus: ${e.message}')));
+      messenger.showSnackBar(SnackBar(content: Text("Couldn't delete: ${e.message}")));
     }
   }
 
@@ -97,7 +98,7 @@ class ItemTile extends StatelessWidget {
         children: [
           ?trailingInfo,
           PopupMenuButton<String>(
-            tooltip: 'Aksi',
+            tooltip: 'Actions',
             onSelected: (action) => switch (action) {
               'open' => openLink(context, item.url),
               'edit' => _edit(context),
@@ -105,22 +106,22 @@ class ItemTile extends StatelessWidget {
               _ => null,
             },
             itemBuilder: (_) => [
-              const PopupMenuItem(value: 'open', child: ListTile(leading: Icon(Icons.open_in_new), title: Text('Buka link'))),
+              const PopupMenuItem(value: 'open', child: ListTile(leading: Icon(Icons.open_in_new), title: Text('Open link'))),
               PopupMenuItem(
                 value: 'edit',
-                // Hasil AI yang masih diproses akan menimpa editan (backend
-                // juga menolak dengan 409) -- tutup pintunya dari UI.
+                // AI output that's still processing would overwrite the edit
+                // (the backend also rejects it with 409) -- block it in the UI.
                 enabled: item.processed,
                 child: ListTile(
                   leading: const Icon(Icons.edit_outlined),
                   title: const Text('Edit'),
-                  subtitle: item.processed ? null : const Text('Tunggu AI selesai'),
+                  subtitle: item.processed ? null : const Text('Wait for the AI to finish'),
                   enabled: item.processed,
                 ),
               ),
               const PopupMenuItem(
                 value: 'delete',
-                child: ListTile(leading: Icon(Icons.delete_outline), title: Text('Hapus')),
+                child: ListTile(leading: Icon(Icons.delete_outline), title: Text('Delete')),
               ),
             ],
           ),

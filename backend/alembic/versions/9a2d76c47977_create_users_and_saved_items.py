@@ -45,18 +45,19 @@ def upgrade() -> None:
     )
     op.create_index('idx_saved_items_user_id', 'saved_items', ['user_id'], unique=False)
     # ### end Alembic commands ###
-    # NOTE (2026-09-22): baris drop_index/drop_table utk tabel `items` yang
-    # tadinya di sini SUDAH DIHAPUS. Itu bukan bagian sah evolusi skema kita --
-    # autogenerate waktu itu membandingkan ke database Sydney yang masih
-    # menyisakan tabel `items` dari project Supabase LAMA (lihat catatan di
-    # knowledge-graph.md, konsep orm-migrations), jadi ikut ke-diff sebagai
-    # "hapus". Ketahuan waktu migrasi ini dijalankan ke database yang BENAR-
-    # BENAR kosong (migrasi ke Supabase Singapore, Fase 5) -- gagal dengan
-    # `UndefinedObject: index "idx_items_created_at" does not exist`, karena
-    # objek itu memang tidak pernah ada di instalasi baru manapun. Aman
-    # dihapus dari file ini: mengedit ISI migrasi yang revision id-nya sudah
-    # tercatat di database lama tidak menjalankannya ulang di sana -- Alembic
-    # cuma mencocokkan revision id, bukan mendiff ulang isinya.
+    # NOTE (2026-09-22): the drop_index/drop_table lines for an `items` table
+    # that used to be here HAVE BEEN REMOVED. They were never a legitimate part
+    # of our schema history -- autogenerate compared against the old Sydney
+    # database, which still held an `items` table from a PREVIOUS Supabase
+    # project, so it diffed it as a "drop". Found when this migration ran
+    # against a TRULY empty database (the move to Supabase Singapore) -- it
+    # failed with `UndefinedObject: index "idx_items_created_at" does not
+    # exist`, because that object never existed in any fresh install. Safe to
+    # remove from this file: editing the CONTENT of a migration whose revision
+    # id is already recorded in an existing database doesn't re-run it there --
+    # Alembic only matches revision ids, it doesn't re-diff the content.
+    # Lesson: autogenerate diffs against the database's CURRENT state, so
+    # always review the generated file and generate against a clean database.
 
 
 def downgrade() -> None:

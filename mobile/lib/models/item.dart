@@ -1,7 +1,7 @@
-/// Cermin dari schema `ItemPublic` di backend (backend/schemas.py).
-/// Semua field selain `id`, `url`, `createdAt` nullable -- ikut keputusan
-/// nullable yang sama seperti di docs/data-model.md, karena field itu hasil
-/// pengayaan AI yang belum tentu sudah selesai diproses.
+/// Mirror of the backend's `ItemPublic` schema (backend/schemas.py).
+/// Every field except `id`, `url`, `createdAt` is nullable -- the same
+/// nullability decision as in docs/data-model.md, because those fields are
+/// AI enrichment results that may not have finished processing yet.
 class Item {
   final String id;
   final String url;
@@ -10,12 +10,12 @@ class Item {
   final String? summary;
   final String? category;
 
-  /// False selama backend masih mengekstrak metadata + memanggil Gemini
-  /// (jalan di background setelah POST /items, lihat backend/enrichment.py).
+  /// False while the backend is still extracting metadata + calling Gemini
+  /// (runs in the background after POST /items, see backend/enrichment.py).
   final bool processed;
 
-  /// False = backend tidak bisa membaca isi link sama sekali. Membedakan
-  /// "link tidak terbaca" dari "AI gagal merangkum" saat [summary] null.
+  /// False = the backend couldn't read the link's content at all. Separates
+  /// "link unreadable" from "AI failed to summarise" when [summary] is null.
   final bool hasContent;
   final DateTime createdAt;
 
@@ -39,21 +39,21 @@ class Item {
         summary: json['summary'] as String?,
         category: json['category'] as String?,
         processed: json['processed'] as bool? ?? true,
-        // Default false: backend lama (belum punya field ini) tetap
-        // menampilkan pesan "tidak terbaca" seperti sebelumnya.
+        // Defaults to false: an older backend (without this field) still
+        // shows the "couldn't read" message as before.
         hasContent: json['has_content'] as bool? ?? false,
         createdAt: DateTime.parse(json['created_at'] as String),
       );
 
-  /// Judul yang ditampilkan di UI. Title diisi AI (atau hasil ekstraksi) di
-  /// background; selama belum ada, atau kalau kontennya memang tidak bisa
-  /// dibaca (mis. Instagram tanpa login), tampilkan URL-nya.
+  /// The title shown in the UI. The title is filled in by the AI (or from
+  /// extraction) in the background; until then, or if the content really
+  /// can't be read (e.g. a private post), show the URL.
   String get displayTitle => title?.isNotEmpty == true ? title! : url;
 }
 
-/// Satu hasil dari POST /search: item + skor kemiripan (cosine similarity).
-/// Skor cuma bermakna untuk membandingkan hasil dalam satu pencarian yang
-/// sama, bukan persentase relevansi absolut (lihat backend/routers/search.py).
+/// One result from POST /search: item + similarity score (cosine similarity).
+/// The score is only meaningful for comparing results within the same
+/// search, not an absolute relevance percentage (see backend/routers/search.py).
 class SearchResult {
   final Item item;
   final double score;

@@ -1,8 +1,8 @@
 """
-SQLAlchemy model, mengikuti docs/data-model.md.
+SQLAlchemy models, following docs/data-model.md.
 
-Kalau ada perbedaan antara file ini dan data-model.md, data-model.md yang benar
-dan file ini yang harus menyesuaikan.
+If this file and data-model.md disagree, data-model.md is right and this file
+has to be brought in line.
 """
 
 import uuid
@@ -49,11 +49,11 @@ class SavedItem(Base):
         nullable=False,
     )
 
-    # Satu-satunya data yang pasti ada saat user menekan "share".
+    # The only data guaranteed to exist when the user taps "share".
     url: Mapped[str] = mapped_column(Text, nullable=False)
 
-    # Semua kolom di bawah ini hasil pengayaan — boleh kosong sampai
-    # scraping / Gemini / embedding selesai (atau gagal).
+    # Every column below is an enrichment result -- allowed to be empty until
+    # scraping / Gemini / embedding finish (or fail).
     platform: Mapped[str | None] = mapped_column(Text, nullable=True)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -69,22 +69,22 @@ class SavedItem(Base):
 
     @property
     def processed(self) -> bool:
-        """raw_content NULL = belum diproses; "" atau berisi = sudah (enrichment.py)."""
+        """raw_content NULL = not processed yet; "" or text = processed (enrichment.py)."""
         return self.raw_content is not None
 
     @property
     def has_content(self) -> bool:
-        """Ekstraksi berhasil membaca isi link. Membedakan dua kasus "sudah
-        diproses tapi tanpa ringkasan": link tidak terbaca (False) vs Gemini
-        gagal padahal isinya ada (True, bisa diulang lewat backfill)."""
+        """Extraction managed to read the link's content. Separates the two
+        "processed but no summary" cases: link unreadable (False) vs Gemini
+        failed even though there was content (True, retryable via backfill)."""
         return bool(self.raw_content)
 
     __table_args__ = (
         Index("idx_saved_items_user_id", "user_id"),
-        # HNSW = index approximate nearest neighbor untuk pencarian vektor.
-        # Operator class HARUS cocok dengan operator di query: vector_cosine_ops
-        # hanya dipakai untuk `<=>`. Query yang ORDER BY `<->` (L2) akan
-        # diam-diam mengabaikan index ini dan kembali memindai seluruh tabel.
+        # HNSW = approximate-nearest-neighbour index for vector search.
+        # The operator class MUST match the operator used in queries:
+        # vector_cosine_ops only serves `<=>`. A query that ORDER BYs `<->`
+        # (L2) silently ignores this index and falls back to a full table scan.
         Index(
             "idx_saved_items_embedding_hnsw",
             "embedding",

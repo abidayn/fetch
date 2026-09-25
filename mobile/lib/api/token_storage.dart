@@ -1,12 +1,12 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-/// Wrapper tipis di atas flutter_secure_storage, khusus JWT.
+/// A thin wrapper over flutter_secure_storage, for the JWT only.
 ///
-/// Kenapa secure storage, bukan SharedPreferences: SharedPreferences di
-/// Android tersimpan sebagai XML polos yang bisa dibaca di perangkat rooted
-/// atau lewat adb backup. flutter_secure_storage memakai Keystore (Android)
-/// / Keychain (iOS) -- storage terenkripsi milik OS, dirancang khusus untuk
-/// data sensitif seperti token.
+/// Why secure storage rather than SharedPreferences: on Android,
+/// SharedPreferences is stored as plain XML that can be read on a rooted
+/// device or via adb backup. flutter_secure_storage uses the Keystore
+/// (Android) / Keychain (iOS) -- the OS's encrypted storage, built
+/// specifically for sensitive data like tokens.
 class TokenStorage {
   static const _key = 'access_token';
   final _storage = const FlutterSecureStorage();

@@ -1,9 +1,8 @@
 """
-Koneksi database dan Base declarative.
+Database connection and the declarative Base.
 
-DATABASE_URL belum tersedia sampai Fase 0 (provisioning Postgres) selesai.
-Modul ini sengaja tetap bisa di-import tanpa itu, supaya model bisa ditulis
-dan diperiksa lebih dulu.
+The module deliberately stays importable without DATABASE_URL, so models can
+be imported (e.g. by tooling) without a database configured.
 """
 
 import os
@@ -16,11 +15,11 @@ load_dotenv()
 
 _raw_url = os.environ.get("DATABASE_URL")
 
-# Provider (Neon, Supabase, dll) selalu kasih connection string berskema
-# "postgresql://". SQLAlchemy menerjemahkan skema polos itu ke driver
-# psycopg2 secara default. Kita install psycopg versi 3 (paket "psycopg"),
-# bukan psycopg2 -- jadi skemanya perlu ditulis eksplisit "postgresql+psycopg://"
-# supaya SQLAlchemy tahu driver mana yang harus dipakai.
+# Providers (Neon, Supabase, etc.) always give a connection string with the
+# "postgresql://" scheme. SQLAlchemy maps that bare scheme to the psycopg2
+# driver by default. We install psycopg version 3 (the "psycopg" package),
+# not psycopg2 -- so the scheme has to be spelled "postgresql+psycopg://" for
+# SQLAlchemy to know which driver to use.
 DATABASE_URL = (
     _raw_url.replace("postgresql://", "postgresql+psycopg://", 1)
     if _raw_url
@@ -32,11 +31,11 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 
 
 class Base(DeclarativeBase):
-    """Registry untuk semua model. Alembic menemukan tabel lewat Base.metadata."""
+    """Registry for all models. Alembic finds the tables via Base.metadata."""
 
 
 def get_db():
-    """Dependency FastAPI: satu session per request, dijamin ditutup."""
+    """FastAPI dependency: one session per request, guaranteed to be closed."""
     db = SessionLocal()
     try:
         yield db

@@ -1,10 +1,11 @@
 """
-Pydantic schema: bentuk request dan response API.
+Pydantic schemas: the shape of API requests and responses.
 
-Sengaja terpisah dari models.py (SQLAlchemy). Model = bentuk data di database,
-schema = bentuk data di kawat. Keduanya mirip tapi tidak sama — password mentah
-masuk lewat schema tapi tidak pernah ada di model; password_hash ada di model
-tapi haram muncul di schema response.
+Deliberately separate from models.py (SQLAlchemy). Model = shape of the data in
+the database, schema = shape of the data on the wire. They look alike but
+aren't the same -- the raw password comes in through a schema but never exists
+in a model; password_hash exists in the model but must never appear in a
+response schema.
 """
 
 import uuid
@@ -24,10 +25,10 @@ class UserRegister(BaseModel):
     @field_validator("password")
     @classmethod
     def password_fits_bcrypt(cls, v: str) -> str:
-        # Batasnya 72 BYTE, bukan 72 karakter — satu karakter non-ASCII bisa
-        # memakan 2-4 byte, jadi max_length biasa tidak cukup akurat.
+        # The limit is 72 BYTES, not 72 characters -- one non-ASCII character
+        # can take 2-4 bytes, so a plain max_length isn't accurate enough.
         if len(v.encode("utf-8")) > BCRYPT_MAX_BYTES:
-            raise ValueError(f"Password melebihi {BCRYPT_MAX_BYTES} byte.")
+            raise ValueError(f"Password exceeds {BCRYPT_MAX_BYTES} bytes.")
         return v
 
 
@@ -37,7 +38,7 @@ class UserLogin(BaseModel):
 
 
 class UserPublic(BaseModel):
-    """Bentuk user yang boleh keluar dari API. Tidak ada password_hash di sini."""
+    """The user shape allowed out of the API. No password_hash here."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -52,23 +53,23 @@ class TokenResponse(BaseModel):
 
 
 class ItemCreate(BaseModel):
-    # Title manual dari Fase 1 dihapus: sekarang title diisi otomatis oleh
-    # pengayaan AI (enrichment.py). Client cukup kirim url.
+    # The client only sends the url: title, summary and category are filled
+    # in automatically by AI enrichment (enrichment.py).
     url: str
 
 
 class ItemUpdate(BaseModel):
-    """PATCH /items/{id}: cuma field yang DIKIRIM yang diubah (exclude_unset).
+    """PATCH /items/{id}: only fields that are SENT get changed (exclude_unset).
 
-    url sengaja tidak bisa diedit: link beda = item beda, simpan baru saja.
+    url deliberately can't be edited: a different link = a different item, save a new one.
     """
 
     title: str | None = Field(default=None, min_length=1, max_length=300)
     summary: str | None = Field(default=None, max_length=2000)
     category: Category | None = None
 
-    # mode="before": strip SEBELUM min_length dicek -- kalau sesudahnya,
-    # judul "   " lolos min_length lalu tersimpan sebagai string kosong.
+    # mode="before": strip BEFORE min_length is checked -- if it ran after,
+    # a title of "   " would pass min_length and be saved as an empty string.
     @field_validator("title", "summary", mode="before")
     @classmethod
     def strip_text(cls, v):
@@ -84,24 +85,25 @@ class ItemPublic(BaseModel):
     title: str | None
     summary: str | None
     category: str | None
-    processed: bool  # False = pengayaan belum selesai (UI tampilkan "memproses")
-    has_content: bool  # False = isi link tidak terbaca (lihat SavedItem.has_content)
+    processed: bool  # False = enrichment not finished (UI shows "processing")
+    has_content: bool  # False = the link's content couldn't be read (see SavedItem.has_content)
     created_at: datetime
 
 
 class SearchFilters(BaseModel):
-    """Bagian terstruktur dari hybrid retrieval: disaring di WHERE, bukan lewat
-    vektor. "video masak bulan lalu" = "masak" (semantik) + created_at (filter)
-    -- tanggal tidak bisa "dipahami" embedding, jadi harus jadi kolom."""
+    """The structured part of hybrid retrieval: filtered in WHERE, not via the
+    vector. "cooking videos from last month" = "cooking" (semantic) +
+    created_at (filter) -- embeddings can't "understand" dates, so they have
+    to be a column."""
 
     category: Category | None = None
-    created_after: datetime | None = None  # inklusif
-    created_before: datetime | None = None  # eksklusif
+    created_after: datetime | None = None  # inclusive
+    created_before: datetime | None = None  # exclusive
 
     @model_validator(mode="after")
     def range_is_valid(self):
         if self.created_after and self.created_before and self.created_after >= self.created_before:
-            raise ValueError("created_after harus sebelum created_before.")
+            raise ValueError("created_after must be before created_before.")
         return self
 
 
@@ -111,9 +113,9 @@ class SearchRequest(SearchFilters):
 
 
 class SearchResult(ItemPublic):
-    # Cosine similarity 0..1 (makin tinggi makin mirip). Cuma bermakna untuk
-    # membandingkan hasil dalam SATU pencarian -- angkanya tidak bisa dibaca
-    # sebagai persentase relevansi (teks acak pun bisa dapat ~0.6).
+    # Cosine similarity 0..1 (higher = more similar). Only meaningful for
+    # comparing results within ONE search -- the number can't be read as a
+    # relevance percentage (even random text can score ~0.6).
     score: float
 
 
@@ -122,7 +124,7 @@ class AnswerRequest(SearchFilters):
 
 
 class AnswerResponse(BaseModel):
-    # Menyebut sumber dengan penanda [1], [2], ... = indeks (mulai 1) ke
-    # `sources`. None = Gemini gagal; client tampilkan sources saja.
+    # Sources are cited with markers [1], [2], ... = 1-based index into
+    # `sources`. None = Gemini failed; the client shows just the sources.
     answer: str | None
     sources: list[SearchResult]

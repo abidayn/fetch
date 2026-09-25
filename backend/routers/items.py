@@ -1,4 +1,4 @@
-"""CRUD saved_items. Semua route butuh login (lewat get_current_user)."""
+"""CRUD for saved_items. Every route requires login (via get_current_user)."""
 
 import logging
 import uuid
@@ -23,11 +23,11 @@ router = APIRouter(prefix="/items", tags=["items"])
 
 def _get_own_item(db: Session, item_id: uuid.UUID, user: User) -> SavedItem:
     item = db.get(SavedItem, item_id)
-    # 404 juga dipakai kalau item milik user LAIN — bukan cuma kalau item
-    # memang tidak ada. Ini disengaja: 403 justru membocorkan "item ini ada,
-    # cuma bukan milikmu", yang membocorkan keberadaan data user lain.
+    # 404 is also used when the item belongs to ANOTHER user -- not only when
+    # it doesn't exist. Deliberate: a 403 would leak "this item exists, it's
+    # just not yours", revealing that another user's data exists.
     if item is None or item.user_id != user.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Item tidak ditemukan.")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found.")
     return item
 
 
@@ -38,9 +38,9 @@ def create_item(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Simpan url saja lalu langsung balas 201. Ekstraksi + Gemini (4-9 detik)
-    # jalan SETELAH response terkirim -- menyimpan link tidak boleh menunggu,
-    # apalagi gagal, gara-gara scraping atau Gemini. Lihat enrichment.py.
+    # Store just the url and reply 201 right away. Extraction + Gemini (4-9
+    # seconds) run AFTER the response is sent -- saving a link must not wait
+    # for, let alone fail because of, scraping or Gemini. See enrichment.py.
     item = SavedItem(user_id=current_user.id, url=payload.url)
     db.add(item)
     db.commit()
@@ -62,12 +62,12 @@ def list_items(
     return items
 
 
-# Harus didaftarkan SEBELUM /{item_id}: FastAPI mencocokkan route berurutan,
-# dan "categories" akan dicoba di-parse sebagai UUID lalu gagal 422.
+# Must be registered BEFORE /{item_id}: FastAPI matches routes in order, and
+# "categories" would be parsed as a UUID and fail with 422.
 @router.get("/categories", response_model=list[str])
 def list_categories(current_user: User = Depends(get_current_user)):
-    """Daftar kategori tetap dari classifier.py -- sumber tunggal untuk
-    dropdown edit di app, supaya tidak ada salinan daftar di Flutter."""
+    """The fixed category list from classifier.py -- the single source for the
+    app's edit dropdown, so there's no copy of the list in Flutter."""
     return list(get_args(Category))
 
 
@@ -89,18 +89,18 @@ def update_item(
 ):
     item = _get_own_item(db, item_id, current_user)
     if not item.processed:
-        # Pengayaan di background akan MENIMPA title/summary/category begitu
-        # selesai -- editan user hilang diam-diam. Tolak dulu, coba lagi nanti.
-        raise HTTPException(status.HTTP_409_CONFLICT, "Item masih diproses AI, coba lagi sebentar.")
+        # Background enrichment would OVERWRITE title/summary/category once it
+        # finishes -- the user's edit would silently vanish. Reject for now.
+        raise HTTPException(status.HTTP_409_CONFLICT, "The AI is still processing this item, try again shortly.")
 
     changes = payload.model_dump(exclude_unset=True)
-    # Title & kategori boleh tidak dikirim, tapi tidak boleh dikosongkan:
-    # tanpa title UI jatuh ke URL mentah, tanpa kategori item hilang dari
-    # browse per kategori. Summary boleh kosong.
+    # Title & category may be omitted, but not cleared: without a title the
+    # UI falls back to the raw URL, without a category the item disappears
+    # from browse-by-category. Summary may be empty.
     if "title" in changes and changes["title"] is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Judul tidak boleh kosong.")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Title can't be empty.")
     if "category" in changes and changes["category"] is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Kategori tidak boleh kosong.")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Category can't be empty.")
     if changes.get("summary") == "":
         changes["summary"] = None
 
@@ -108,18 +108,18 @@ def update_item(
     for field, value in changes.items():
         setattr(item, field, value)
 
-    # Vektor dibuat dari title+summary (embeddings.py). Kalau keduanya
-    # berubah tapi vektornya tidak, pencarian tetap memakai makna LAMA.
-    # Ganti kategori saja tidak perlu embed ulang (kategori bukan bagian teks).
+    # The vector is built from title+summary (embeddings.py). If those change
+    # but the vector doesn't, search keeps using the OLD meaning. Changing
+    # only the category needs no re-embed (category isn't part of the text).
     text_after = embedding_text(item.title, item.summary)
     if text_after != text_before:
         vector = embed_one(text_after) if text_after else None
         if vector is not None or not text_after:
             item.embedding = vector
         else:
-            # Gemini gagal: vektor lama (makna mirip) lebih berguna daripada
-            # NULL (item hilang dari pencarian). Edit tetap disimpan.
-            log.warning("embed ulang item %s gagal, vektor lama dipertahankan", item_id)
+            # Gemini failed: the old vector (similar meaning) is more useful
+            # than NULL (item drops out of search). The edit is still saved.
+            log.warning("re-embedding item %s failed, keeping the old vector", item_id)
 
     db.commit()
     db.refresh(item)

@@ -1,9 +1,9 @@
 """
-Klasifikasi konten via Gemini: teks hasil ekstraksi -> title, summary, category.
+Content classification via Gemini: extracted text -> title, summary, category.
 
-Kontrak: `classify(...)` mengembalikan Classification atau None. Tidak pernah
-melempar — Gemini down / timeout / respons aneh berarti item tetap tersimpan
-dengan data hasil ekstraksi saja (lihat enrichment.py).
+Contract: `classify(...)` returns a Classification or None. It never raises --
+Gemini down / timeout / odd response means the item is still saved, with the
+extracted data only (see enrichment.py).
 """
 
 import logging
@@ -18,9 +18,9 @@ log = logging.getLogger(__name__)
 
 MODEL = "gemini-3.6-flash"
 
-# Daftar tetap, bukan teks bebas: kategori yang dikarang bebas oleh model
-# ("Cooking" vs "Food & Recipes") akan memecah satu topik jadi banyak label
-# dan merusak browse/filter per kategori nanti.
+# A fixed list, not free text: categories the model makes up freely
+# ("Cooking" vs "Food & Recipes") would split one topic into many labels and
+# break browsing/filtering by category.
 Category = Literal[
     "Tech & Coding",
     "Food & Cooking",
@@ -37,36 +37,36 @@ Category = Literal[
 
 
 class Classification(BaseModel):
-    title: str = Field(description="Judul singkat, maksimal ~80 karakter.")
-    summary: str = Field(description="Ringkasan 1-2 kalimat dalam Bahasa Indonesia.")
+    title: str = Field(description="Short title, at most ~80 characters.")
+    summary: str = Field(description="1-2 sentence summary in English.")
     category: Category
 
 
-PROMPT = """Kamu mengorganisir link yang disimpan seseorang supaya mudah dicari lagi nanti.
+PROMPT = """You organise links someone has saved so they are easy to find again later.
 
-Dari konten di bawah, hasilkan:
-- title: judul singkat (maks ~80 karakter). Kalau konten sudah punya judul
-  yang jelas, pakai itu (boleh dirapikan, pertahankan bahasa aslinya). Kalau
-  tidak ada judul, buat dari isi kontennya.
-- summary: 1-2 kalimat dalam Bahasa Indonesia tentang isi konten ini.
-- category: satu kategori yang paling cocok.
+From the content below, produce:
+- title: a short title (max ~80 characters). If the content already has a
+  clear title, use it (tidy it up if needed, keep its original language). If
+  there is no title, write one from the content.
+- summary: 1-2 sentences in English about what this content is.
+- category: the single best-fitting category.
 
-Aturan penting:
-- Hanya berdasarkan informasi yang ADA di bawah. Jangan mengarang detail.
-- Kalau informasinya tipis (misalnya cuma hashtag), ringkasan boleh pendek
-  dan umum. Pilih "Other" kalau benar-benar tidak jelas topiknya.
-- Abaikan teks promosi, link sponsor, dan ajakan subscribe.
+Important rules:
+- Base everything ONLY on the information below. Do not invent details.
+- If the information is thin (e.g. just hashtags), the summary may be short
+  and general. Choose "Other" if the topic is genuinely unclear.
+- Ignore promotional text, sponsor links, and calls to subscribe.
 
 Platform: {platform}
 URL: {url}
 
-Konten:
+Content:
 {content}
 """
 
 def classify(url: str, platform: str, content: str) -> Classification | None:
     if not content.strip():
-        # Tanpa isi, model cuma bisa menebak dari URL -> halusinasi.
+        # With no content, the model can only guess from the URL -> hallucination.
         return None
 
     try:
@@ -76,20 +76,20 @@ def classify(url: str, platform: str, content: str) -> Classification | None:
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=Classification,
-                temperature=0.2,  # konsistensi pengkategorian > kreativitas
+                temperature=0.2,  # consistent categorisation > creativity
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             ),
         )
-    except Exception as e:  # jaringan, timeout, quota, API error
-        log.warning("gemini gagal untuk %s: %s", url, e)
+    except Exception as e:  # network, timeout, quota, API error
+        log.warning("gemini failed for %s: %s", url, e)
         return None
 
-    # SDK mengisi .parsed kalau JSON-nya cocok dengan schema. Tetap divalidasi
-    # ulang dari teks mentah sebagai jaring kedua kalau .parsed kosong.
+    # The SDK fills .parsed when the JSON matches the schema. The raw text is
+    # still validated again as a second safety net in case .parsed is empty.
     if isinstance(response.parsed, Classification):
         return response.parsed
     try:
         return Classification.model_validate_json(response.text or "")
     except ValidationError as e:
-        log.warning("respons gemini tidak valid untuk %s: %s | teks=%r", url, e, response.text)
+        log.warning("invalid gemini response for %s: %s | text=%r", url, e, response.text)
         return None

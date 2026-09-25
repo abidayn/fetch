@@ -1,5 +1,5 @@
 """
-Dependency bersama untuk route yang butuh autentikasi.
+Shared dependencies for routes that require authentication.
 """
 
 import uuid
@@ -12,8 +12,8 @@ from database import get_db
 from models import User
 from security import decode_access_token
 
-# auto_error=False supaya kita sendiri yang menentukan bentuk error-nya,
-# bukan pesan bawaan FastAPI.
+# auto_error=False so we decide the shape of the error ourselves, rather than
+# FastAPI's built-in message.
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
@@ -21,15 +21,15 @@ def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: Session = Depends(get_db),
 ) -> User:
-    """Ubah header `Authorization: Bearer <token>` jadi objek User.
+    """Turn the `Authorization: Bearer <token>` header into a User object.
 
-    Semua kegagalan menghasilkan 401 yang identik — token hilang, rusak,
-    kedaluwarsa, atau menunjuk user yang sudah dihapus. Penyerang tidak perlu
-    tahu mana penyebabnya.
+    Every failure produces the identical 401 -- token missing, malformed,
+    expired, or pointing at a deleted user. An attacker doesn't get to learn
+    which one it was.
     """
     unauthorized = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Token tidak valid atau sudah kedaluwarsa.",
+        detail="Invalid or expired token.",
         headers={"WWW-Authenticate": "Bearer"},
     )
 

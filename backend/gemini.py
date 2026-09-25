@@ -1,8 +1,8 @@
 """
-Satu client Gemini untuk seluruh backend (klasifikasi + embedding).
+One Gemini client for the whole backend (classification + embeddings + answers).
 
-Dibuat lazy (baru dibuat saat pertama dipakai) supaya modul-modul yang
-meng-import ini tetap bisa di-import tanpa GEMINI_API_KEY, mis. oleh Alembic.
+Created lazily (only on first use) so modules importing this can still be
+imported without GEMINI_API_KEY, e.g. by Alembic.
 """
 
 import os
@@ -25,9 +25,9 @@ def get_client() -> genai.Client:
             api_key=os.environ["GEMINI_API_KEY"],
             http_options=types.HttpOptions(
                 timeout=TIMEOUT_MS,
-                # 429 (rate limit) & 503 ("high demand") itu gangguan sementara
-                # -- kejadian nyata waktu uji Fase 3. Dicoba ulang dengan jeda
-                # makin panjang (2s, 4s) sebelum dianggap gagal.
+                # 429 (rate limit) and 503 ("high demand") are transient --
+                # both actually happened during testing. Retried with growing
+                # delays (2s, 4s) before being treated as a failure.
                 retry_options=types.HttpRetryOptions(
                     attempts=3,
                     initial_delay=2.0,

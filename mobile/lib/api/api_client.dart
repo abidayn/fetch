@@ -6,10 +6,10 @@ import 'package:http/http.dart' as http;
 
 import 'token_storage.dart';
 
-/// Dilempar kalau backend menjawab dengan status di luar 2xx.
-/// [statusCode] dipakai UI buat bedain kasus (401 vs 404 vs lainnya).
-/// [statusCode] 0 = request tidak pernah sampai / tidak dijawab (offline,
-/// timeout) -- dibedakan supaya UI tidak perlu menangkap SocketException dll.
+/// Thrown when the backend answers with a status outside 2xx.
+/// [statusCode] lets the UI tell cases apart (401 vs 404 vs others).
+/// [statusCode] 0 = the request never arrived / got no answer (offline,
+/// timeout) -- kept distinct so the UI doesn't have to catch SocketException etc.
 class ApiException implements Exception {
   final int statusCode;
   final String message;
@@ -21,46 +21,46 @@ class ApiException implements Exception {
   String toString() => 'ApiException($statusCode): $message';
 }
 
-/// Satu pintu masuk untuk semua HTTP ke backend Fetch.
+/// The single entry point for all HTTP to the Fetch backend.
 ///
-/// Kenapa disentralisasi di satu class, bukan http.get/post tersebar di
-/// tiap screen: base URL dan header Authorization jadi satu tempat. Kalau
-/// nanti pindah dari localhost ke server production (Fase 5), cuma
-/// [_baseUrl] yang berubah -- tidak ada screen yang perlu disentuh.
+/// Why centralised in one class, rather than http.get/post scattered across
+/// screens: the base URL and the Authorization header live in one place.
+/// Moving from localhost to the production server only changes [_baseUrl]
+/// -- no screen has to be touched.
 class ApiClient {
   final TokenStorage _tokenStorage;
   ApiClient(this._tokenStorage);
 
-  /// Diisi saat build production: --dart-define=API_BASE_URL=https://...
-  /// Kalau tidak diisi (flutter run biasa saat dev), jatuh ke backend lokal.
+  /// Set for production builds: --dart-define=API_BASE_URL=https://...
+  /// When not set (a plain `flutter run` during dev), falls back to the local backend.
   static const _envBaseUrl = String.fromEnvironment('API_BASE_URL');
 
-  /// Emulator Android punya jaringan virtual sendiri -- "localhost" di
-  /// emulator menunjuk ke emulator itu sendiri, BUKAN ke mesin host tempat
-  /// backend jalan. 10.0.2.2 adalah alias khusus yang disediakan Android
-  /// emulator untuk menunjuk balik ke localhost host. Ini cuma berlaku
-  /// untuk emulator resmi Android Studio -- device fisik butuh IP LAN asli.
+  /// The Android emulator has its own virtual network -- "localhost" in the
+  /// emulator points at the emulator itself, NOT at the host machine running
+  /// the backend. 10.0.2.2 is a special alias the Android emulator provides
+  /// to point back at the host's localhost. It only applies to the official
+  /// Android Studio emulator -- a physical device needs a real LAN IP.
   static String get _baseUrl {
     if (_envBaseUrl.isNotEmpty) return _envBaseUrl;
     if (Platform.isAndroid) return 'http://10.0.2.2:8000';
     return 'http://127.0.0.1:8000';
   }
 
-  // Batas tunggu satu request. Lebih longgar dari biasanya karena server
-  // Railway bisa "tidur" (Serverless) dan butuh belasan detik untuk bangun.
+  // How long to wait for one request. Looser than usual because the Railway
+  // server can "sleep" (Serverless) and takes a dozen-plus seconds to wake up.
   static const _timeout = Duration(seconds: 30);
 
-  // Status yang berarti "server/gateway sedang tidak siap", bukan "request
-  // salah" -- 502 muncul di request pertama saat Railway baru bangun (§5.4).
+  // Statuses that mean "the server/gateway isn't ready", not "the request is
+  // wrong" -- a 502 shows up on the first request while Railway is waking up.
   static const _transientStatuses = {502, 503, 504};
 
-  /// Kirim request dengan timeout, dan ulangi SEKALI kalau gagalnya sementara
-  /// (jaringan putus, timeout, 502/503/504).
+  /// Send a request with a timeout, and retry ONCE if the failure is transient
+  /// (network drop, timeout, 502/503/504).
   ///
-  /// [retry] cuma boleh true untuk request yang aman diulang (idempotent):
-  /// GET, PATCH, DELETE, login, dan pencarian. POST /items TIDAK -- kalau
-  /// request pertama sebenarnya sudah sampai tapi balasannya hilang,
-  /// mengulang = link tersimpan dua kali. Untuk itu user menekan "Coba lagi".
+  /// [retry] may only be true for requests that are safe to repeat
+  /// (idempotent): GET, PATCH, DELETE, login, and search. POST /items is NOT
+  /// -- if the first request actually arrived but its reply was lost,
+  /// repeating it = the link is saved twice. For that, the user taps "Try again".
   Future<http.Response> _send(Future<http.Response> Function() request, {bool retry = true}) async {
     for (var attempt = 1;; attempt++) {
       final canRetry = retry && attempt < 2;
@@ -73,13 +73,13 @@ class ApiClient {
         return res;
       } on SocketException {
         if (canRetry) continue;
-        throw ApiException(0, 'Tidak bisa terhubung ke server. Cek koneksi internet.');
+        throw ApiException(0, "Can't reach the server. Check your internet connection.");
       } on http.ClientException {
         if (canRetry) continue;
-        throw ApiException(0, 'Tidak bisa terhubung ke server. Cek koneksi internet.');
+        throw ApiException(0, "Can't reach the server. Check your internet connection.");
       } on TimeoutException {
         if (canRetry) continue;
-        throw ApiException(0, 'Server terlalu lama menjawab. Coba lagi.');
+        throw ApiException(0, 'The server took too long to respond. Try again.');
       }
     }
   }
@@ -93,36 +93,36 @@ class ApiClient {
     return headers;
   }
 
-  /// Menerjemahkan response HTTP jadi data Dart, atau melempar ApiException.
-  /// Satu tempat ini yang dipakai semua method di bawah -- jangan duplikasi
-  /// pengecekan status code di tiap pemanggil.
+  /// Turns an HTTP response into Dart data, or throws ApiException.
+  /// Every method below goes through this one place -- don't duplicate
+  /// status-code checks in each caller.
   dynamic _handle(http.Response res) {
     if (res.statusCode >= 200 && res.statusCode < 300) {
-      if (res.body.isEmpty) return null; // contoh: 204 No Content dari DELETE
+      if (res.body.isEmpty) return null; // e.g. 204 No Content from DELETE
       return jsonDecode(res.body);
     }
 
-    String message = 'Terjadi kesalahan (${res.statusCode})';
+    String message = 'Something went wrong (${res.statusCode})';
     try {
       final body = jsonDecode(res.body);
       final detail = body['detail'];
-      // FastAPI kirim `detail` sebagai string (error kita sendiri) ATAU
-      // sebagai list of object (dari validasi Pydantic, kode 422) --
-      // dua bentuk berbeda, keduanya perlu ditangani.
+      // FastAPI sends `detail` as a string (our own errors) OR as a list of
+      // objects (from Pydantic validation, status 422) -- two different
+      // shapes, both need handling.
       if (detail is String) {
         message = detail;
       } else if (detail is List && detail.isNotEmpty) {
         message = detail.first['msg'] ?? message;
       }
     } catch (_) {
-      // Body bukan JSON valid -- pertahankan pesan default di atas.
+      // Body isn't valid JSON -- keep the default message above.
     }
     throw ApiException(res.statusCode, message);
   }
 
   Future<Map<String, dynamic>> register(String email, String password) async {
-    // Tidak diulang: kalau percobaan pertama ternyata sudah membuat akun,
-    // percobaan kedua dijawab "email sudah terdaftar" -- membingungkan.
+    // Not retried: if the first attempt actually created the account, the
+    // second one gets "email already registered" -- confusing.
     final res = await _send(retry: false, () async => http.post(
       Uri.parse('$_baseUrl/auth/register'),
       headers: await _headers(withAuth: false),
@@ -131,8 +131,8 @@ class ApiClient {
     return _handle(res) as Map<String, dynamic>;
   }
 
-  /// Login sukses -> token langsung disimpan di sini, di satu tempat.
-  /// Pemanggil (LoginScreen) tidak perlu tahu-menahu soal token storage.
+  /// Successful login -> the token is saved right here, in one place.
+  /// The caller (LoginScreen) doesn't need to know anything about token storage.
   Future<void> login(String email, String password) async {
     final res = await _send(() async => http.post(
       Uri.parse('$_baseUrl/auth/login'),
@@ -155,8 +155,8 @@ class ApiClient {
 
   List<String>? _categories;
 
-  /// Daftar kategori tetap dari backend (classifier.py). Di-cache: daftarnya
-  /// cuma berubah kalau backend di-deploy ulang dengan kategori baru.
+  /// The fixed category list from the backend (classifier.py). Cached: the
+  /// list only changes when the backend is redeployed with new categories.
   Future<List<String>> listCategories() async {
     final cached = _categories;
     if (cached != null) return cached;
@@ -165,7 +165,7 @@ class ApiClient {
     return _categories = (_handle(res) as List<dynamic>).cast<String>();
   }
 
-  /// Cukup kirim url -- title/summary/category diisi otomatis oleh backend.
+  /// Just send the url -- title/summary/category are filled in by the backend.
   Future<Map<String, dynamic>> createItem(String url) async {
     final res = await _send(retry: false, () async => http.post(
       Uri.parse('$_baseUrl/items'),
@@ -175,12 +175,12 @@ class ApiClient {
     return _handle(res) as Map<String, dynamic>;
   }
 
-  /// Pencarian semantik. Hasil sudah terurut dari yang paling mirip dan
-  /// sudah disaring relevansinya di backend -- list kosong itu jawaban sah
-  /// ("tidak ada yang cocok"), bukan error.
+  /// Semantic search. Results are already sorted most-similar first and
+  /// relevance-filtered by the backend -- an empty list is a valid answer
+  /// ("nothing matches"), not an error.
   ///
-  /// [category] / [createdAfter] = bagian terstruktur hybrid search: disaring
-  /// di SQL yang sama dengan pencarian vektor (backend/routers/search.py).
+  /// [category] / [createdAfter] = the structured part of hybrid search:
+  /// filtered in the same SQL as the vector search (backend/routers/search.py).
   Future<List<dynamic>> search(String query,
       {int limit = 10, String? category, DateTime? createdAfter}) async {
     final res = await _send(() async => http.post(
@@ -191,8 +191,8 @@ class ApiClient {
     return _handle(res) as List<dynamic>;
   }
 
-  /// RAG lengkap: backend mencari item relevan lalu Gemini merangkai jawaban.
-  /// `answer` bisa null (Gemini gagal / kuota habis) -- `sources` tetap ada.
+  /// Full RAG: the backend finds relevant items, then Gemini writes an answer.
+  /// `answer` can be null (Gemini failed / quota used up) -- `sources` is still there.
   Future<Map<String, dynamic>> searchAnswer(String query,
       {String? category, DateTime? createdAfter}) async {
     final res = await _send(() async => http.post(
@@ -214,8 +214,9 @@ class ApiClient {
     return _handle(res) as Map<String, dynamic>;
   }
 
-  /// Cuma field yang dikirim yang diubah. Backend menolak (409) selama item
-  /// masih diproses AI, karena hasil AI akan menimpa editan.
+  /// Only the fields that are sent get changed. The backend rejects it (409)
+  /// while the item is still being processed by the AI, since the AI output
+  /// would overwrite the edit.
   Future<Map<String, dynamic>> updateItem(String id,
       {String? title, String? summary, String? category}) async {
     final headers = await _headers();
@@ -231,8 +232,8 @@ class ApiClient {
     return _handle(res) as Map<String, dynamic>;
   }
 
-  /// Diulang otomatis kalau gagal sementara: DELETE kedua atas item yang
-  /// ternyata sudah terhapus menjawab 404 -- itu juga dianggap berhasil.
+  /// Retried automatically on transient failures: a second DELETE of an item
+  /// that turns out to be already deleted gets a 404 -- also treated as success.
   Future<void> deleteItem(String id) async {
     final headers = await _headers();
     final res = await _send(() => http.delete(Uri.parse('$_baseUrl/items/$id'), headers: headers));

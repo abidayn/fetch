@@ -3,15 +3,15 @@ import 'package:flutter/material.dart';
 import '../api/api_client.dart';
 import '../models/item.dart';
 
-/// Form edit title / summary / kategori. Mengembalikan item versi baru dari
-/// backend kalau disimpan, null kalau dibatalkan.
+/// Form for editing title / summary / category. Returns the backend's new
+/// version of the item if saved, null if cancelled.
 ///
-/// Gunanya membetulkan hasil AI yang meleset (kategori salah, judul generik
-/// seperti "YouTube" waktu yt-dlp diblokir) -- bukan mengetik ulang dari nol.
+/// Meant for correcting AI output that missed (wrong category, a generic
+/// title like "YouTube" when yt-dlp was blocked) -- not retyping from scratch.
 Future<Item?> showEditItemSheet(BuildContext context, ApiClient apiClient, Item item) {
   return showModalBottomSheet<Item>(
     context: context,
-    isScrollControlled: true, // supaya sheet bisa naik di atas keyboard
+    isScrollControlled: true, // so the sheet can move up above the keyboard
     showDragHandle: true,
     builder: (_) => _EditItemSheet(apiClient: apiClient, item: item),
   );
@@ -62,14 +62,14 @@ class _EditItemSheetState extends State<_EditItemSheet> {
   Future<void> _save() async {
     final title = _titleCtrl.text.trim();
     if (title.isEmpty) {
-      setState(() => _error = 'Judul tidak boleh kosong.');
+      setState(() => _error = "Title can't be empty.");
       return;
     }
     final summary = _summaryCtrl.text.trim();
     final item = widget.item;
 
-    // Kirim yang berubah saja: backend meng-embed ulang cuma kalau title /
-    // summary berubah (satu panggilan Gemini), ganti kategori saja tidak.
+    // Send only what changed: the backend re-embeds only when title / summary
+    // change (one Gemini call); changing just the category doesn't.
     final newTitle = title != (item.title ?? '') ? title : null;
     final newSummary = summary != (item.summary ?? '') ? summary : null;
     final newCategory = _category != item.category ? _category : null;
@@ -99,15 +99,15 @@ class _EditItemSheetState extends State<_EditItemSheet> {
     if (cats == null) {
       if (_categoriesError != null) {
         return Row(children: [
-          Expanded(child: Text('Kategori gagal dimuat: $_categoriesError')),
-          TextButton(onPressed: _loadCategories, child: const Text('Coba lagi')),
+          Expanded(child: Text("Couldn't load categories: $_categoriesError")),
+          TextButton(onPressed: _loadCategories, child: const Text('Try again')),
         ]);
       }
       return const LinearProgressIndicator();
     }
     return DropdownButtonFormField<String>(
       initialValue: cats.contains(_category) ? _category : null,
-      decoration: const InputDecoration(labelText: 'Kategori', border: OutlineInputBorder()),
+      decoration: const InputDecoration(labelText: 'Category', border: OutlineInputBorder()),
       items: [for (final c in cats) DropdownMenuItem(value: c, child: Text(c))],
       onChanged: _saving ? null : (v) => setState(() => _category = v),
     );
@@ -117,7 +117,7 @@ class _EditItemSheetState extends State<_EditItemSheet> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Padding(
-      // viewInsets = tinggi keyboard; tanpa ini tombol Simpan tertutup keyboard.
+      // viewInsets = keyboard height; without this the Save button is hidden by the keyboard.
       padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
       child: SafeArea(
         child: SingleChildScrollView(
@@ -139,7 +139,7 @@ class _EditItemSheetState extends State<_EditItemSheet> {
                 controller: _titleCtrl,
                 enabled: !_saving,
                 maxLength: 300,
-                decoration: const InputDecoration(labelText: 'Judul', border: OutlineInputBorder()),
+                decoration: const InputDecoration(labelText: 'Title', border: OutlineInputBorder()),
               ),
               const SizedBox(height: 8),
               TextField(
@@ -148,7 +148,7 @@ class _EditItemSheetState extends State<_EditItemSheet> {
                 minLines: 2,
                 maxLines: 5,
                 maxLength: 2000,
-                decoration: const InputDecoration(labelText: 'Ringkasan', border: OutlineInputBorder()),
+                decoration: const InputDecoration(labelText: 'Summary', border: OutlineInputBorder()),
               ),
               const SizedBox(height: 8),
               _categoryField(),
@@ -162,7 +162,7 @@ class _EditItemSheetState extends State<_EditItemSheet> {
                 Expanded(
                   child: OutlinedButton(
                     onPressed: _saving ? null : () => Navigator.pop(context),
-                    child: const Text('Batal'),
+                    child: const Text('Cancel'),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -172,7 +172,7 @@ class _EditItemSheetState extends State<_EditItemSheet> {
                     child: _saving
                         ? const SizedBox(
                             height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Text('Simpan'),
+                        : const Text('Save'),
                   ),
                 ),
               ]),

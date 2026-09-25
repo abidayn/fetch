@@ -1,15 +1,15 @@
-# Fetch — Data Model
+# Data model
 
-Hasil desain skema database (Fase 1). Dokumen ini sumber kebenaran untuk struktur
-tabel; SQLAlchemy model dan migrasi Alembic dibuat **mengikuti** dokumen ini,
-bukan sebaliknya.
+The source of truth for the table structure. The SQLAlchemy models
+(`backend/models.py`) and the Alembic migrations follow this document, not the
+other way round. The DDL is written as SQL for precision; the real
+implementation goes through SQLAlchemy but must be equivalent.
 
-DDL di bawah ditulis sebagai SQL agar presisi. Implementasi sebenarnya nanti lewat
-SQLAlchemy, tapi hasil akhirnya harus setara dengan ini.
+Migrations so far: `9a2d76c47977` (both tables) → `66de89f6cd67` (HNSW index).
 
 ---
 
-## Tabel `users`
+## Table `users`
 
 ```sql
 CREATE TABLE users (
@@ -20,18 +20,18 @@ CREATE TABLE users (
 );
 ```
 
-| Kolom | Keputusan | Alasan |
+| Column | Decision | Reason |
 |---|---|---|
-| `id` | `UUID`, bukan `BIGSERIAL` | ID muncul di URL API (`GET /items/{id}`). Integer berurutan bisa ditebak/di-enumerasi orang lain dan membocorkan jumlah data. UUID juga tidak butuh koordinasi kalau data pernah digabung antar environment. Konsekuensi: lebih repot dibaca manual waktu debugging — `BIGSERIAL` sebenarnya pilihan yang sah juga. |
-| `email` | `TEXT`, bukan `VARCHAR(255)` | Di PostgreSQL, `TEXT` dan `VARCHAR` performanya identik — `VARCHAR(n)` cuma menambah pengecekan panjang. Batas panjang yang dikarang sendiri justru sumber bug (ada email yang sah tapi panjang). Ini spesifik Postgres; di MySQL sarannya beda. |
-| `email` | `UNIQUE` | Email adalah identitas login. Kalau boleh duplikat, query login jadi ambigu — dua baris cocok, harus pilih yang mana? Constraint ini yang membuat login deterministik. |
-| `email` | disimpan **lowercase** (dinormalisasi di aplikasi) | `A@x.com` dan `a@x.com` pada praktiknya orang yang sama, tapi bagi `UNIQUE` itu dua nilai berbeda. Normalisasi sebelum simpan mencegah user tidak sengaja punya dua akun. |
-| `password_hash` | `TEXT NOT NULL`, bukan `CHAR(60)` | Panjang hash bergantung algoritma (bcrypt 60 karakter, argon2 beda lagi). Mengunci panjangnya membuat ganti algoritma jadi butuh migrasi. Nama kolomnya sengaja `password_hash`, bukan `password` — nama itu sendiri jadi dokumentasi bahwa kolom ini haram diisi password mentah. |
-| `created_at` | `TIMESTAMPTZ`, bukan `TIMESTAMP` | `TIMESTAMPTZ` menyimpan titik waktu absolut (dinormalisasi ke UTC). `TIMESTAMP` polos menyimpan angka jam tanpa zona — ambigu begitu server jalan di UTC sementara kamu di WIB. Di Postgres, default-nya selalu `TIMESTAMPTZ`. |
+| `id` | `UUID`, not `BIGSERIAL` | IDs appear in API URLs (`GET /items/{id}`). Sequential integers can be guessed/enumerated and leak how much data exists. The cost: harder to read by hand while debugging. |
+| `email` | `TEXT`, not `VARCHAR(255)` | In Postgres, `TEXT` and `VARCHAR` perform identically; `VARCHAR(n)` only adds a length check, and a made-up limit is a source of bugs (valid emails can be long). |
+| `email` | `UNIQUE` | Email is the login identity. Duplicates would make login ambiguous. |
+| `email` | stored **lowercase** (normalised in `routers/auth.py`) | `A@x.com` and `a@x.com` are the same person in practice, but different values to `UNIQUE`. |
+| `password_hash` | `TEXT NOT NULL`, not `CHAR(60)` | Hash length depends on the algorithm; locking it would make changing algorithms a migration. The name itself documents that raw passwords never go here. |
+| `created_at` | `TIMESTAMPTZ`, not `TIMESTAMP` | Stores an absolute point in time (UTC). Plain `TIMESTAMP` is ambiguous once the server runs in UTC and the user is in WIB. |
 
 ---
 
-## Tabel `saved_items`
+## Table `saved_items`
 
 ```sql
 CREATE TABLE saved_items (
@@ -52,134 +52,114 @@ CREATE TABLE saved_items (
 );
 
 CREATE INDEX idx_saved_items_user_id ON saved_items(user_id);
+CREATE INDEX idx_saved_items_embedding_hnsw ON saved_items
+    USING hnsw (embedding vector_cosine_ops);
 ```
 
-### Yang `NOT NULL` dan yang boleh `NULL` — ini keputusan paling penting di sini
+### What's `NOT NULL` and what may be `NULL` — the most important decision here
 
-Hanya **tiga** kolom yang wajib ada saat baris dibuat: `id`, `user_id`, `url`.
-Sisanya boleh kosong, dan itu disengaja.
+Only **three** columns must exist when the row is created: `id`, `user_id`,
+`url`. Everything else may be empty, deliberately.
 
-Alasannya: `url` adalah satu-satunya hal yang benar-benar kita punya pada detik
-user menekan "share". Semua kolom lain — `title`, `summary`, `category`,
-`raw_content`, `embedding` — adalah hasil **pengayaan** (enrichment) yang terjadi
-setelahnya: scraping metadata, panggilan Gemini, pembuatan embedding.
+The `url` is the only thing we actually have the moment the user taps "share".
+Every other column — `title`, `summary`, `category`, `raw_content`,
+`embedding` — is an **enrichment** result that happens afterwards (scraping,
+Gemini, embedding). Making them `NOT NULL` would mean **Gemini down = the user
+can't save a link at all**, and saving is the core of the product. With nullable
+columns:
 
-Kalau kolom-kolom itu dibuat `NOT NULL`, konsekuensinya fatal: **Gemini down =
-user tidak bisa menyimpan link sama sekali.** Padahal menyimpan link itu inti
-produknya; klasifikasi cuma nilai tambah. Dengan nullable, alurnya jadi:
+1. Save the row with just the `url` → the user gets an immediate confirmation.
+2. Enrichment runs afterwards (in a background task; it can fail and be retried).
 
-1. Simpan baris dengan `url` saja → user langsung dapat konfirmasi tersimpan
-2. Pengayaan jalan setelahnya (bisa gagal, bisa diulang nanti)
+### NULL = work queue
 
-Ini juga yang membuat Fase 1 bisa jalan sebelum Fase 3 ada: di Fase 1, item
-tersimpan dengan `title` manual dan sisanya `NULL`. Tidak perlu ubah skema waktu
-AI ditambahkan nanti.
+The empty columns double as work queues, so there's no status/flag column:
 
-Efek samping yang menguntungkan: **kolom `NULL` sekaligus jadi penanda antrian
-kerja.** Item yang butuh diklasifikasi ulang = `WHERE summary IS NULL`. Item yang
-butuh di-backfill embedding = `WHERE embedding IS NULL`. Jadi kita tidak perlu
-kolom status/flag terpisah — informasinya sudah terkandung di data itu sendiri.
+- needs (re)classification → `summary IS NULL`
+- needs an embedding → `embedding IS NULL` (`backfill_embeddings.py`)
 
-**Konvensi tambahan (Fase 3): `raw_content` sebagai status pengayaan.**
+### `raw_content` encodes the enrichment state
 
-| `raw_content` | Arti |
-|---|---|
-| `NULL` | Belum diproses (baru disimpan, atau server mati saat background task jalan) |
-| `''` (string kosong) | Sudah diproses, tapi tidak ada isi yang bisa diambil (mis. Instagram tanpa login, URL 404) |
-| berisi teks | Sudah diproses |
-
-Pembedaan `NULL` vs `''` ini yang memungkinkan app menampilkan "memproses"
-hanya untuk item yang memang masih antri, bukan selamanya untuk item yang
-kontennya tidak bisa dibaca. API mengekspos ini sebagai `processed: bool`
-(property di model, bukan kolom). `backfill_enrichment.py` memproses ulang
-`raw_content IS NULL` dan `summary IS NULL AND raw_content != ''` (punya isi
-tapi Gemini gagal), dan sengaja melewati `''`.
-
-### Per kolom
-
-| Kolom | Keputusan | Alasan |
+| `raw_content` | Meaning | API |
 |---|---|---|
-| `user_id` | `NOT NULL` + foreign key | Item tanpa pemilik tidak punya arti di aplikasi ini. FK memastikan tidak mungkin ada item yang menunjuk user yang tidak ada. |
-| `ON DELETE CASCADE` | hapus user → item ikut terhapus | Alternatifnya `RESTRICT` (tolak hapus user selama masih punya item) atau `SET NULL` (item jadi yatim). Untuk aplikasi personal, CASCADE yang benar: hapus akun artinya hapus datanya. |
-| `url` | `NOT NULL` | Satu-satunya data yang pasti ada saat simpan. Tanpa ini barisnya tidak ada gunanya. |
-| `platform` | `NULL` | Diisi hasil deteksi di Fase 3 (`youtube`/`tiktok`/`instagram`/`generic`). Sebelum Fase 3 ada, kosong. |
-| `title` | `NULL` | Fase 1 diisi manual, Fase 3 diganti hasil AI, dan bisa gagal. |
-| `summary`, `category` | `NULL` | Murni hasil Gemini. Kosong = belum/gagal diproses. |
-| `raw_content` | `NULL` | Teks mentah hasil ekstraksi, **disimpan sengaja** meski sudah ada `summary`. Alasannya: kalau nanti prompt atau model diperbaiki, klasifikasi bisa diulang dari data ini **tanpa scraping ulang** — dan scraping itu rapuh (halaman berubah, kena rate limit, konten dihapus). Ini asuransi murah. |
-| `embedding` | `VECTOR(768) NULL` | Dibahas di bawah. |
-| `created_at` | `NOT NULL DEFAULT now()` | Waktu simpan, dipakai untuk urutan tampilan dan (nanti di Fase 6) filter rentang waktu pada hybrid search. |
-| index `user_id` | ditambahkan | Query paling sering di aplikasi ini adalah "semua item milik user X". Tanpa index, Postgres memindai seluruh tabel tiap kali. Foreign key **tidak** otomatis membuat index di Postgres — ini kesalahpahaman umum. |
+| `NULL` | Not processed yet (just saved, or the server died mid-task) | `processed: false` |
+| `''` (empty string) | Processed, but nothing could be extracted (private/deleted post, 404) | `processed: true`, `has_content: false` |
+| text | Processed, holds the extracted text | `processed: true`, `has_content: true` |
+
+`processed` and `has_content` are properties on the model, not columns. They let
+the app show "processing" only for items that are really queued, and tell
+"couldn't read this link" apart from "the AI failed on readable content"
+(`processed`, `has_content`, `summary IS NULL`).
+
+`backfill_enrichment.py` re-processes `raw_content IS NULL` and
+`summary IS NULL AND raw_content != ''`, and deliberately skips `''`.
+
+### Per column
+
+| Column | Decision | Reason |
+|---|---|---|
+| `user_id` | `NOT NULL` + foreign key | An item without an owner means nothing here. The FK guarantees no item points at a missing user. |
+| `ON DELETE CASCADE` | deleting a user deletes their items | Alternatives are `RESTRICT` or `SET NULL` (orphaned items). For a personal app, deleting an account means deleting its data. |
+| `url` | `NOT NULL` | The only data guaranteed at save time. |
+| `platform` | `NULL` | Set by extraction: `youtube` / `tiktok` / `instagram` / `generic`. |
+| `title` | `NULL` | Set by Gemini (or the extracted title if Gemini fails). Editable by the user. |
+| `summary`, `category` | `NULL` | Pure Gemini output, in English. `category` is always one of the fixed list in `classifier.py`. Editable by the user. |
+| `raw_content` | `NULL` | The raw extracted text (max 4000 chars), **kept on purpose** even after `summary` exists: if the prompt or model changes, items can be re-classified from it **without re-scraping** (`backfill_enrichment.py --reclassify`) — and scraping is fragile (pages change, get rate-limited, get deleted). Cheap insurance. |
+| `embedding` | `VECTOR(768) NULL` | See below. |
+| `created_at` | `NOT NULL DEFAULT now()` | Display order, and the time-range filter in hybrid search. |
+| index on `user_id` | added | The most frequent query is "all items of user X". Postgres does **not** index foreign keys automatically. |
+| HNSW index on `embedding` | `vector_cosine_ops` | Approximate nearest-neighbour search. The operator class must match the query operator (`<=>`); see "Gotchas" in `CLAUDE.md`. |
 
 ---
 
-## Relasi
+## Relationships
 
 ```
-users (1) ──────< (banyak) saved_items
+users (1) ──────< (many) saved_items
         id              user_id
 ```
 
-Satu user punya banyak saved item; satu saved item milik tepat satu user.
-Relasi one-to-many biasa, diwujudkan lewat kolom FK di sisi "banyak".
-
-MVP ini single-user, tapi tabel `users` tetap ada sejak awal — karena JWT auth
-(Fase 1) butuh sesuatu untuk mengidentifikasi pemilik token, dan menambahkan
-konsep kepemilikan setelah ada data jauh lebih mahal daripada menyiapkannya
-sekarang.
+A plain one-to-many relationship via the FK on the "many" side. Fetch is
+effectively single-user, but `users` existed from the start: JWT auth needs an
+owner for each token, and adding ownership after data exists is far more
+expensive than setting it up first.
 
 ---
 
-## Dimensi kolom `embedding`: **768**
+## Embedding dimension: **768**
 
-Ini keputusan yang tidak bisa diubah dengan mudah, jadi ditulis alasannya lengkap.
+This can't be changed easily, so the reasoning is written out in full.
 
-**Batasannya:**
-- Model `gemini-embedding-001` menghasilkan **3072** dimensi secara default, tapi
-  mendukung pemotongan ke **1536** atau **768** lewat parameter
-  `output_dimensionality`.
-- Index pgvector (HNSW maupun IVFFlat) **hanya mendukung sampai 2000 dimensi.**
+**The constraints:**
+- `gemini-embedding-2` produces **3072** dimensions by default, and supports
+  truncation to **1536** or **768** via `output_dimensionality`.
+- pgvector indexes (HNSW and IVFFlat) **only support up to 2000 dimensions.**
+  At 3072 the column couldn't be indexed at all.
 
-Artinya kalau kita pakai 3072, kolom `embedding` **tidak bisa diberi index sama
-sekali** — setiap pencarian harus memindai seluruh tabel. Padahal di plan.md Fase
-4 ada task "Buat index HNSW di kolom embedding"; task itu mustahil dikerjakan pada
-3072.
+**Why 768 rather than 1536:**
+- What gets embedded is a short title + summary, not a long document. The
+  quality difference between 768 and 3072 is small for this.
+- 4× less storage: ≈ 3 KB per item instead of ≈ 12 KB. Relevant on a 0.5 GB
+  free-tier database.
+- Faster queries: shorter vectors to compare.
 
-**Kenapa 768 dan bukan 1536:**
-- Yang di-embed adalah ringkasan pendek, bukan dokumen panjang. Selisih kualitas
-  pencarian antara 768 dan 3072 kecil untuk kasus seperti ini.
-- Ukuran penyimpanan 4× lebih kecil: 3072 dim × 4 byte ≈ 12 KB per item, versus
-  ≈ 3 KB pada 768. Relevan karena free tier database cuma 0,5 GB.
-- Query lebih cepat karena vektor yang dibandingkan lebih pendek.
+**What breaks if the embedding model changes:**
 
-**Yang rusak kalau model embedding diganti nanti:**
-
-Dimensi ini terkunci di skema (`VECTOR(768)`). Kalau suatu saat pindah model:
-
-1. Ganti dimensi butuh **migrasi skema** — bukan sekadar ganti konfigurasi.
-2. Seluruh embedding lama harus **dibuat ulang**. Vektor dari model berbeda
-   berada di "ruang" yang berbeda — membandingkannya menghasilkan angka yang
-   secara matematis valid tapi **tidak bermakna**. Ini bahaya senyap: tidak ada
-   error, hasil pencariannya saja yang jadi ngawur.
-3. Ini berlaku bahkan kalau dimensinya kebetulan sama. Kesamaan jumlah dimensi
-   tidak membuat dua model bisa dibandingkan.
-
-**Amandemen Fase 4 (2026-09-19): model yang dipakai `gemini-embedding-2`,
-bukan `gemini-embedding-001`.** Batas dimensinya sama (3072 default, dipotong ke
-768), jadi skema tidak berubah. Alasan pindah (diuji langsung): lebih tegas
-membedakan relevan vs tidak, dan vektornya sudah ternormalisasi. Detail di
-`docs/rag-guide.md` §3.3.
-
-Konsekuensi praktis: model embedding harus dipilih sekali dan dipertahankan.
-Kalau berubah, konsekuensinya re-embed semua data — itulah kenapa `raw_content`
-disimpan.
+1. Changing the dimension needs a **schema migration**, not just a config change.
+2. All existing embeddings must be **regenerated** (`backfill_embeddings.py --all`).
+   Vectors from different models live in different "spaces" — comparing them
+   produces numbers that are mathematically valid but **meaningless**. A silent
+   failure: no error, search results just become nonsense.
+3. This holds even if the dimension happens to be the same. Same length ≠ comparable.
+4. The relevance thresholds in `routers/search.py` are calibrated for this model
+   and must be recalibrated too (see `docs/decisions.md`).
 
 ---
 
-## Keputusan yang sengaja ditunda
+## Decisions deliberately deferred
 
-| Hal | Status | Alasan |
+| Item | Status | Reason |
 |---|---|---|
-| `UNIQUE (user_id, url)` | **tidak dipakai di MVP** | Mencegah simpan ganda, tapi memaksa `POST /items` menangani konflik, dan memblokir user yang memang sengaja menyimpan ulang. Ditinjau lagi kalau duplikat terbukti mengganggu. |
-| `updated_at` / `enriched_at` | **tidak dipakai** | Informasinya sudah bisa diturunkan dari `summary IS NULL` / `embedding IS NULL`. Jangan tambah kolom yang isinya bisa dihitung dari kolom lain. |
-| Tabel `categories` terpisah | **tidak dipakai** | `category` cukup jadi TEXT dulu. Normalisasi ke tabel sendiri baru masuk akal kalau kategori butuh atribut sendiri (warna, ikon, urutan). |
-| Index HNSW pada `embedding` | **dibuat di Fase 4** | `idx_saved_items_embedding_hnsw`, `vector_cosine_ops` (migrasi `66de89f6cd67`). Operator class harus cocok dengan operator query (`<=>`). Hasil perbandingan sebelum/sesudah: `docs/rag-guide.md` §7. |
+| `UNIQUE (user_id, url)` | **not used** | Would prevent duplicate saves, but forces `POST /items` to handle conflicts and blocks users who deliberately save again. Revisit if duplicates become a real annoyance. |
+| `updated_at` / `enriched_at` | **not used** | The information can be derived from `summary IS NULL` / `embedding IS NULL`. Don't add columns whose content can be computed from other columns. |
+| Separate `categories` table | **not used** | `category` as TEXT from a fixed list is enough. A table only makes sense if categories need their own attributes (colour, icon, order). |

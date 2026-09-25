@@ -1,10 +1,10 @@
 """
-Pencarian semantik (bagian "R" dari RAG): kalimat pencarian -> vektor -> item
-milik user yang vektornya paling dekat. /search/answer menambahkan "A+G":
-hasil retrieval dirangkai Gemini jadi jawaban naratif (answerer.py).
+Semantic search (the "R" of RAG): search query -> vector -> the user's items
+whose vectors are closest. /search/answer adds the "A+G": Gemini turns the
+retrieved items into a narrative answer (answerer.py).
 
-POST, bukan GET: kalimat pencarian itu data pribadi. Di GET, ia ikut jadi
-bagian URL dan tercatat di log server / proxy. Di body, tidak.
+POST, not GET: a search query is personal data. With GET it becomes part of
+the URL and ends up in server / proxy logs. In the body, it doesn't.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -20,11 +20,12 @@ from schemas import AnswerRequest, AnswerResponse, ItemPublic, SearchFilters, Se
 
 router = APIRouter(prefix="/search", tags=["search"])
 
-# Dua saringan relevansi, dikalibrasi dari uji manual (docs/rag-guide.md).
-# Keduanya perlu: skor absolut saja gagal karena query pendek/acak menaikkan
-# SEMUA skor ("asdfghjkl" dapat 0.61), dan jarak-dari-teratas saja gagal
-# karena selalu meloloskan minimal satu hasil walau tidak ada yang relevan.
-# Angka ini khusus gemini-embedding-2 -- ganti model = kalibrasi ulang.
+# Two relevance filters, calibrated from manual testing (docs/decisions.md).
+# Both are needed: an absolute score alone fails because short/random queries
+# raise ALL scores ("asdfghjkl" scores 0.61), and distance-from-top alone
+# fails because it always lets at least one result through even when nothing
+# is relevant. These numbers are specific to gemini-embedding-2 -- change the
+# model = recalibrate.
 MIN_SCORE = 0.60
 MAX_GAP_FROM_TOP = 0.06
 
@@ -32,27 +33,27 @@ MAX_GAP_FROM_TOP = 0.06
 def retrieve(
     db: Session, user: User, query: str, limit: int, filters: SearchFilters | None = None
 ) -> list[SearchResult]:
-    """Bagian R: dipakai /search (daftar) dan /search/answer (bahan jawaban).
+    """The R part: used by /search (the list) and /search/answer (answer material).
 
-    Hybrid: `filters` (kategori, rentang created_at) masuk WHERE yang sama
-    dengan jarak vektor -- satu query SQL, bukan cari dulu lalu saring di
-    Python. Saring belakangan akan membuang hasil SETELAH LIMIT dan bisa
-    menyisakan nol item padahal yang cocok ada di peringkat ke-11 dst.
+    Hybrid: `filters` (category, created_at range) go into the same WHERE as
+    the vector distance -- one SQL query, not search-then-filter in Python.
+    Filtering afterwards would drop results AFTER the LIMIT and could leave
+    zero items even though matches exist at rank 11 and beyond.
     """
     query_vector = embed_one(query.strip())
     if query_vector is None:
-        # Tanpa vektor query tidak ada yang bisa dibandingkan. 503 = gangguan
-        # sementara di layanan luar, client boleh coba lagi.
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Pencarian sedang tidak tersedia, coba lagi.")
+        # Without a query vector there's nothing to compare. 503 = a transient
+        # problem in an external service, the client may retry.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Search is unavailable right now, try again.")
 
-    # HNSW mengambil ef_search (default 40) kandidat terdekat dari SELURUH
-    # tabel dulu, baru WHERE user_id disaring setelahnya -- kalau kebanyakan
-    # kandidat milik user lain, hasil bisa kurang dari limit bahkan kosong.
-    # iterative_scan (pgvector >= 0.8) membuat index terus mencari sampai
-    # hasil yang lolos filter cukup. SET LOCAL = cuma berlaku di transaksi ini.
+    # HNSW first takes the ef_search (default 40) nearest candidates from the
+    # WHOLE table, and only then filters by user_id -- if most candidates
+    # belong to other users, results can fall short of the limit or be empty.
+    # iterative_scan (pgvector >= 0.8) makes the index keep searching until
+    # enough results pass the filter. SET LOCAL = applies to this transaction only.
     db.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
 
-    distance = SavedItem.embedding.cosine_distance(query_vector)  # operator <=>
+    distance = SavedItem.embedding.cosine_distance(query_vector)  # the <=> operator
     conditions = [
         SavedItem.user_id == user.id,
         SavedItem.embedding.is_not(None),
@@ -77,7 +78,7 @@ def retrieve(
     for item, dist in rows:
         score = 1 - dist
         if results and score < results[0].score - MAX_GAP_FROM_TOP:
-            break  # sudah terurut, sisanya pasti lebih jauh lagi
+            break  # already sorted, everything after this is even further away
         results.append(SearchResult(**ItemPublic.model_validate(item).model_dump(), score=round(score, 4)))
     return results
 
@@ -91,11 +92,11 @@ def search(
     return retrieve(db, current_user, payload.query, payload.limit, payload)
 
 
-# Konteks untuk LLM sengaja kecil: 5 item paling relevan. Lebih banyak =
-# lebih banyak token (lambat, mahal) dan item yang relevansinya pinggiran
-# malah mengundang model untuk "memaksakan" hubungan yang tidak ada.
+# The LLM context is deliberately small: the 5 most relevant items. More =
+# more tokens (slower, costlier), and marginally relevant items tempt the
+# model to "force" connections that aren't there.
 ANSWER_CONTEXT_ITEMS = 5
-NO_MATCH_ANSWER = "Tidak ada item tersimpan yang cocok dengan pertanyaan ini."
+NO_MATCH_ANSWER = "None of your saved items match this question."
 
 
 @router.post("/answer", response_model=AnswerResponse)
@@ -104,13 +105,13 @@ def search_answer(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """RAG lengkap: R (retrieve) -> A (masukkan ke prompt) -> G (Gemini menjawab)."""
+    """Full RAG: R (retrieve) -> A (put into the prompt) -> G (Gemini answers)."""
     sources = retrieve(db, current_user, payload.query, ANSWER_CONTEXT_ITEMS, payload)
     if not sources:
-        # Tidak ada bahan = Gemini tidak dipanggil. Kalau dipanggil dengan
-        # konteks kosong, ia cenderung menjawab dari pengetahuan umumnya --
-        # persis halusinasi yang mau dicegah RAG.
+        # No material = Gemini isn't called. Called with an empty context it
+        # tends to answer from general knowledge -- exactly the hallucination
+        # RAG is meant to prevent.
         return AnswerResponse(answer=NO_MATCH_ANSWER, sources=[])
-    # answer None = generasi gagal (kuota/timeout). Sumbernya tetap dikirim:
-    # daftar hasil tetap berguna tanpa rangkuman.
+    # answer None = generation failed (quota/timeout). The sources are still
+    # sent: the result list is useful even without a summary.
     return AnswerResponse(answer=generate_answer(payload.query, sources), sources=sources)

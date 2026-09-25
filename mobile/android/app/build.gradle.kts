@@ -6,8 +6,8 @@ plugins {
 
 android {
     namespace = "com.example.mobile"
-    // receive_sharing_intent butuh compileSdk 37+; default flutter.compileSdkVersion
-    // di Flutter 3.44.6 masih 36. Di-hardcode ke 37 (SDK-nya sudah terinstal).
+    // receive_sharing_intent needs compileSdk 37+; the default flutter.compileSdkVersion
+    // in Flutter 3.44.6 is still 36. Hardcoded to 37 (that SDK is installed).
     compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
@@ -27,10 +27,10 @@ android {
         versionName = flutter.versionName
     }
 
-    // Keystore release cuma ada di CI (di-decode dari GitHub Secrets, lihat
-    // .github/workflows/android-release.yml). Kunci yang SAMA di tiap build
-    // wajib supaya APK baru bisa menimpa versi lama di HP tester -- debug key
-    // CI berbeda tiap runner. Build lokal tanpa file ini tetap pakai debug key.
+    // The release keystore only exists in CI (decoded from GitHub Secrets, see
+    // .github/workflows/android-release.yml). The SAME key on every build is
+    // required so a new APK can install over the old one on testers' phones --
+    // CI's debug key differs per runner. Local builds without this file use the debug key.
     val releaseKeystore = file("release.jks")
     signingConfigs {
         if (releaseKeystore.exists()) {
@@ -64,9 +64,9 @@ flutter {
 }
 
 dependencies {
-    // Kontrol eksplisit atas splash-screen sistem Android 12+ (lihat catatan
-    // di styles.xml / MainActivity.kt) -- dibutuhkan karena mekanisme
-    // auto-dismiss bawaan Flutter tidak konsisten waktu Activity dibuat lewat
-    // trampoline share-sheet (BLOKIR-D di docs/plan.md).
+    // Explicit control over the Android 12+ system splash screen (see the
+    // notes in styles.xml / MainActivity.kt) -- needed because Flutter's
+    // built-in auto-dismiss is unreliable when the Activity is created via the
+    // share-sheet trampoline (see "Gotchas" in CLAUDE.md).
     implementation("androidx.core:core-splashscreen:1.0.1")
 }

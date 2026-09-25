@@ -4,13 +4,13 @@ import '../api/api_client.dart';
 import '../models/item.dart';
 import '../widgets/item_tile.dart';
 
-/// Pilihan rentang waktu untuk filter `created_after`. Relatif ke hari ini,
-/// karena "yang kusimpan minggu lalu" lebih alami daripada memilih tanggal.
+/// Time range options for the `created_after` filter. Relative to today,
+/// because "what I saved last week" is more natural than picking a date.
 enum _TimeRange {
-  any('Kapan saja', null),
-  week('7 hari terakhir', 7),
-  month('30 hari terakhir', 30),
-  year('1 tahun terakhir', 365);
+  any('Any time', null),
+  week('Last 7 days', 7),
+  month('Last 30 days', 30),
+  year('Last year', 365);
 
   final String label;
   final int? days;
@@ -30,31 +30,32 @@ class SearchScreen extends StatefulWidget {
 class _SearchScreenState extends State<SearchScreen> {
   final _ctrl = TextEditingController();
 
-  // null = belum pernah mencari (tampilkan petunjuk), [] = sudah mencari
-  // tapi tidak ada yang cocok. Dua keadaan berbeda, pesan berbeda.
+  // null = hasn't searched yet (show the hint), [] = searched but nothing
+  // matched. Two different states, two different messages.
   List<SearchResult>? _results;
   String? _error;
   bool _loading = false;
 
-  // Filter terstruktur hybrid search -- dikirim ke backend dan disaring di
-  // SQL yang sama dengan pencarian vektor, bukan disaring dari hasil di app.
+  // Structured hybrid-search filters -- sent to the backend and applied in the
+  // same SQL as the vector search, not filtered from the results in the app.
   String? _category;
   _TimeRange _range = _TimeRange.any;
   List<String>? _categories;
 
-  // Jawaban AI diminta terpisah lewat tombol, bukan otomatis tiap pencarian:
-  // tiap jawaban = satu panggilan Gemini (kuota free tier harian terbatas),
-  // dan sering daftar hasilnya saja sudah cukup.
+  // The AI answer is requested separately via a button, not automatically on
+  // every search: each answer = one Gemini call (limited daily free-tier
+  // quota), and often the result list alone is enough.
   String? _answer;
   bool _answerLoading = false;
   String? _lastQuery;
 
-  // Nomor urut pencarian: hasil dari pencarian lama (mis. filter diganti
-  // saat request masih jalan) dibuang, bukan menimpa hasil yang lebih baru.
+  // Search sequence number: results from an older search (e.g. the filter
+  // changed while a request was in flight) are dropped, not allowed to
+  // overwrite newer results.
   int _searchSeq = 0;
 
-  // Nilai menu "semua kategori". Bukan null: PopupMenuButton menganggap
-  // pilihan bernilai null sebagai "dibatalkan" dan tidak memanggil onSelected.
+  // Menu value for "all categories". Not null: PopupMenuButton treats a null
+  // choice as "cancelled" and doesn't call onSelected.
   static const _allCategories = '';
 
   bool get _hasFilter => _category != null || _range != _TimeRange.any;
@@ -65,7 +66,7 @@ class _SearchScreenState extends State<SearchScreen> {
     widget.apiClient.listCategories().then((c) {
       if (mounted) setState(() => _categories = c);
     }).catchError((_) {
-      // Tanpa daftar kategori, filter kategori disembunyikan; cari tetap jalan.
+      // Without the category list, the category filter is hidden; search still works.
     });
   }
 
@@ -75,10 +76,10 @@ class _SearchScreenState extends State<SearchScreen> {
     super.dispose();
   }
 
-  /// Dipanggil saat user menekan enter/tombol cari (atau mengganti filter),
-  /// BUKAN tiap ketikan: setiap pencarian = satu panggilan embedding ke
-  /// Gemini. Search-as-you-type akan menghabiskan kuota untuk potongan kata
-  /// yang tidak bermakna ("res", "rese", "resep").
+  /// Called when the user presses enter/the search button (or changes a
+  /// filter), NOT on every keystroke: each search = one embedding call to
+  /// Gemini. Search-as-you-type would burn quota on meaningless word
+  /// fragments ("rec", "reci", "recip").
   Future<void> _search() async {
     final query = _ctrl.text.trim();
     if (query.isEmpty) return;
@@ -110,7 +111,7 @@ class _SearchScreenState extends State<SearchScreen> {
       if (category != null) _category = category;
       if (range != null) _range = range;
     });
-    // Hasil lama tidak lagi sesuai filter -- cari ulang kalau sudah pernah.
+    // The old results no longer match the filter -- search again if we already had.
     if (_lastQuery != null) _search();
   }
 
@@ -122,10 +123,10 @@ class _SearchScreenState extends State<SearchScreen> {
     try {
       final data = await widget.apiClient
           .searchAnswer(query, category: _category, createdAfter: _range.createdAfter);
-      // User sudah mencari ulang (query/filter lain) selagi menunggu -> basi.
+      // The user searched again (different query/filter) while waiting -> stale.
       if (!mounted || seq != _searchSeq) return;
       setState(() {
-        _answer = data['answer'] as String? ?? 'AI sedang tidak tersedia, coba lagi nanti.';
+        _answer = data['answer'] as String? ?? 'The AI is unavailable right now, try again later.';
       });
     } on ApiException catch (e) {
       if (mounted && seq == _searchSeq) setState(() => _answer = e.message);
@@ -145,8 +146,8 @@ class _SearchScreenState extends State<SearchScreen> {
   void _remove(Item removed) {
     setState(() {
       _results = _results!.where((r) => r.item.id != removed.id).toList();
-      // Nomor [n] di jawaban menunjuk urutan daftar -- setelah ada yang
-      // hilang, nomornya bergeser dan jawaban jadi menunjuk item yang salah.
+      // The [n] numbers in the answer point at list positions -- once an item
+      // is removed the numbers shift and the answer points at the wrong items.
       _answer = null;
     });
   }
@@ -161,18 +162,18 @@ class _SearchScreenState extends State<SearchScreen> {
         children: [
           if (cats != null)
             PopupMenuButton<String>(
-              tooltip: 'Filter kategori',
+              tooltip: 'Filter by category',
               onSelected: (c) =>
                   c == _allCategories ? _setFilter(clearCategory: true) : _setFilter(category: c),
               itemBuilder: (_) => [
-                const PopupMenuItem(value: _allCategories, child: Text('Semua kategori')),
+                const PopupMenuItem(value: _allCategories, child: Text('All categories')),
                 for (final c in cats) PopupMenuItem(value: c, child: Text(c)),
               ],
-              child: _FilterPill(label: _category ?? 'Semua kategori', active: _category != null),
+              child: _FilterPill(label: _category ?? 'All categories', active: _category != null),
             ),
           const SizedBox(width: 8),
           PopupMenuButton<_TimeRange>(
-            tooltip: 'Filter waktu simpan',
+            tooltip: 'Filter by date saved',
             onSelected: (r) => _setFilter(range: r),
             itemBuilder: (_) => [for (final r in _TimeRange.values) PopupMenuItem(value: r, child: Text(r.label))],
             child: _FilterPill(label: _range.label, active: _range != _TimeRange.any),
@@ -181,7 +182,7 @@ class _SearchScreenState extends State<SearchScreen> {
             const SizedBox(width: 4),
             TextButton(
               onPressed: () => _setFilter(clearCategory: true, range: _TimeRange.any),
-              child: const Text('Hapus filter'),
+              child: const Text('Clear filters'),
             ),
           ],
         ],
@@ -189,9 +190,9 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  /// Nomor [1], [2] di jawaban menunjuk urutan di daftar hasil di bawahnya:
-  /// /search/answer memakai retrieval (dan filter) yang sama, 5 teratas, jadi
-  /// urutannya identik dengan 5 hasil pertama /search.
+  /// The [1], [2] numbers in the answer point at positions in the result list
+  /// below it: /search/answer uses the same retrieval (and filters), top 5, so
+  /// the order is identical to the first 5 results of /search.
   Widget _answerCard() {
     final theme = Theme.of(context);
     Widget child;
@@ -199,7 +200,7 @@ class _SearchScreenState extends State<SearchScreen> {
       child = const Row(children: [
         SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
         SizedBox(width: 12),
-        Text('Merangkum…'),
+        Text('Summarising…'),
       ]);
     } else if (_answer != null) {
       child = Text(_answer!, style: theme.textTheme.bodyMedium);
@@ -209,7 +210,7 @@ class _SearchScreenState extends State<SearchScreen> {
         child: TextButton.icon(
           onPressed: _askAi,
           icon: const Icon(Icons.auto_awesome, size: 18),
-          label: const Text('Rangkum dengan AI'),
+          label: const Text('Summarise with AI'),
         ),
       );
     }
@@ -233,27 +234,27 @@ class _SearchScreenState extends State<SearchScreen> {
       return _centered([
         Text(_error!, textAlign: TextAlign.center),
         const SizedBox(height: 8),
-        FilledButton.icon(onPressed: _search, icon: const Icon(Icons.refresh), label: const Text('Coba lagi')),
+        FilledButton.icon(onPressed: _search, icon: const Icon(Icons.refresh), label: const Text('Try again')),
       ]);
     }
     final results = _results;
     if (results == null) {
       return _centered(const [
         Text(
-          'Cari pakai kalimat biasa, misalnya\n"resep masakan pedas" atau "video olahraga".\n\n'
-          'Persempit dengan kategori atau waktu simpan di atas.',
+          'Search in plain words, for example\n"spicy food recipes" or "workout videos".\n\n'
+          'Narrow it down with the category or date filters above.',
           textAlign: TextAlign.center,
         ),
       ]);
     }
     if (results.isEmpty) {
       return _centered([
-        Text(_hasFilter ? 'Tidak ada yang cocok dengan filter ini.' : 'Tidak ada yang cocok.'),
+        Text(_hasFilter ? 'Nothing matches these filters.' : 'Nothing matches.'),
         if (_hasFilter) ...[
           const SizedBox(height: 8),
           TextButton(
             onPressed: () => _setFilter(clearCategory: true, range: _TimeRange.any),
-            child: const Text('Cari tanpa filter'),
+            child: const Text('Search without filters'),
           ),
         ],
       ]);
@@ -286,9 +287,9 @@ class _SearchScreenState extends State<SearchScreen> {
           autofocus: true,
           textInputAction: TextInputAction.search,
           onSubmitted: (_) => _search(),
-          decoration: const InputDecoration(hintText: 'Cari yang pernah disimpan…', border: InputBorder.none),
+          decoration: const InputDecoration(hintText: 'Search your saved items…', border: InputBorder.none),
         ),
-        actions: [IconButton(onPressed: _search, tooltip: 'Cari', icon: const Icon(Icons.search))],
+        actions: [IconButton(onPressed: _search, tooltip: 'Search', icon: const Icon(Icons.search))],
       ),
       body: Column(children: [
         _filterBar(),
@@ -299,8 +300,8 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 }
 
-/// Tampilan "tombol dropdown" kecil untuk filter. [active] = filter sedang
-/// dipakai, ditandai warna supaya user sadar hasil sedang dipersempit.
+/// A small "dropdown button" look for a filter. [active] = the filter is in
+/// use, highlighted so the user notices the results are narrowed down.
 class _FilterPill extends StatelessWidget {
   final String label;
   final bool active;

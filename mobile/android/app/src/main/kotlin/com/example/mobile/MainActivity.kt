@@ -5,13 +5,13 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import io.flutter.embedding.android.FlutterActivity
 
 class MainActivity : FlutterActivity() {
-    // installSplashScreen() dipanggil manual (bukan mengandalkan mekanisme
-    // implisit Flutter) untuk mengatasi BLOKIR-D: splash macet permanen kalau
-    // Activity ini dibuat lewat trampoline share-sheet Android (ACTION_SEND),
-    // bukan tap launcher biasa. Ini memberi kontrol dismiss yang terikat ke
-    // sinyal draw-pertama Activity di level Android, konsisten di semua jalur
-    // peluncuran -- bukan ke deteksi first-frame Flutter yang ternyata tidak
-    // selalu terpicu benar lewat jalur trampoline itu.
+    // installSplashScreen() is called explicitly (instead of relying on
+    // Flutter's implicit mechanism) to fix the splash screen freezing forever
+    // when this Activity is created via Android's share-sheet trampoline
+    // (ACTION_SEND) rather than a launcher tap. It ties dismissal to the
+    // Activity's first draw at the Android level, consistent across every
+    // launch path -- not to Flutter's first-frame detection, which doesn't
+    // always fire on that trampoline path.
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
