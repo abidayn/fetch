@@ -12,7 +12,7 @@ from classifier import Category
 from database import get_db
 from deps import get_current_user
 from embeddings import embed_one, embedding_text
-from enrichment import enrich_item
+from enrichment import enrich_item, upgrade_due, upgrade_fallback_items
 from models import SavedItem, User
 from schemas import ItemCreate, ItemPublic, ItemUpdate
 
@@ -51,6 +51,7 @@ def create_item(
 
 @router.get("", response_model=list[ItemPublic])
 def list_items(
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -59,6 +60,10 @@ def list_items(
         .where(SavedItem.user_id == current_user.id)
         .order_by(SavedItem.created_at.desc())
     ).all()
+    # Opening the app is the upgrade job's trigger (the server sleeps when
+    # idle, so a timer wouldn't fire). Throttled, and runs after the response.
+    if upgrade_due():
+        background_tasks.add_task(upgrade_fallback_items)
     return items
 
 
@@ -107,6 +112,10 @@ def update_item(
     text_before = embedding_text(item.title, item.summary)
     for field, value in changes.items():
         setattr(item, field, value)
+    if changes:
+        # The user's version is final: the upgrade job never re-classifies
+        # items marked "user" (enrichment.upgrade_fallback_items).
+        item.classified_by = "user"
 
     # The vector is built from title+summary (embeddings.py). If those change
     # but the vector doesn't, search keeps using the OLD meaning. Changing

@@ -18,13 +18,17 @@ deliberately NOT retried -- the result would still be empty.
                first (including user edits, if any): otherwise, if Gemini
                fails again, the old wrong values would stay.
 
---reclassify : re-run ONLY the Gemini classification (+ embedding) for every
-               item that has content, from the stored raw_content -- no
+--reclassify : re-run ONLY the classification (+ embedding) for every item
+               that has content, from the stored raw_content -- no
                re-scraping. For prompt or model changes (e.g. switching the
                summary language). Overwrites title/summary/category,
-               including user edits. Uses one classification call per item,
-               so mind the daily free-tier quota; items that fail keep their
-               old values and can be retried by running this again.
+               including user edits. Goes through the normal fallback chain,
+               so once the primary's daily quota is gone the rest are done by
+               fallback models (recorded in classified_by) and upgraded by
+               the primary on later days. Gentler alternative: set
+               classified_by = NULL on the items to redo and let the
+               automatic upgrade job (enrichment.py) work through them
+               within the primary's spare quota.
 
 Usage:
     venv/Scripts/python.exe backfill_enrichment.py
@@ -41,7 +45,7 @@ from sqlalchemy import and_, or_, select
 from classifier import classify
 from database import SessionLocal
 from embeddings import embed_one, embedding_text
-from enrichment import enrich_item
+from enrichment import apply_classification, enrich_item
 from models import SavedItem
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s - %(message)s")
@@ -68,6 +72,7 @@ def reprocess(ids: list[uuid.UUID]):
                 print(f"[{i}/{len(ids)}] {item_id} not found, skipped")
                 continue
             item.raw_content = item.title = item.summary = item.category = None
+            item.classified_by = None
             item.embedding = None
             db.commit()
         print(f"[{i}/{len(ids)}] {item_id}")
@@ -91,12 +96,12 @@ def reclassify():
                 failed += 1
                 print(f"[{i}/{len(items)}] {item.id} classification failed, kept as is")
                 continue
-            item.title, item.summary, item.category = result.title, result.summary, result.category
+            apply_classification(item, result)
             vector = embed_one(embedding_text(item.title, item.summary))
             if vector is not None:
                 item.embedding = vector
             db.commit()  # per item: a later failure doesn't lose earlier progress
-            print(f"[{i}/{len(items)}] {item.title!r} ({item.category})")
+            print(f"[{i}/{len(items)}] {item.title!r} ({item.category}) by {result.model}")
         print(f"done. {failed} failed (run again later)" if failed else "done.")
 
 

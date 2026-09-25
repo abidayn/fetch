@@ -13,10 +13,9 @@ the git history.
 - [ ] **Back up the release keystore** (`C:\Users\Acer\fetch-release.jks` + its
       password), then delete the unused `C:\Users\Acer\fetch-signing\` folder,
       which holds an old key and a plain-text password. See `operations.md` §4.
-- [ ] **Finish converting old items to English summaries.** The free-tier quota
-      (20 classifications/day) fits ~19 items a day; rerun the conversion until
-      no Indonesian summaries remain (`backfill_enrichment.py --reclassify`
-      re-does *all* items; prefer targeting only the remaining ones).
+- [ ] **Confirm the last Indonesian summaries are gone** in a few days. No manual
+      work needed: the 16 remaining items have `classified_by = NULL`, so the
+      automatic upgrade job converts them within the primary's spare quota.
 
 ## Soon: unverified production checks
 
@@ -39,12 +38,20 @@ These were planned during deployment but never confirmed:
       testers uninstall the old one once.
 - [ ] **Version name from the tag.** Pass `--build-name=${GITHUB_REF_NAME#v}` in
       the release workflow so Android shows e.g. `0.7.1` instead of `1.0.0`.
+- [ ] **Keyword-search fallback for search.** When the query can't be embedded
+      (embedding quota/outage), search title/summary by keywords instead of
+      returning 503, labelled as keyword matches in the app. Deliberately not a
+      second embedding model (see `decisions.md`, "AI fallback").
+- [ ] **Review fallback usage after a week**: how often `served_by` isn't the
+      primary (Railway logs), whether Groq's summaries are good enough, and
+      whether the answer primary (`gemini-3.5-flash`, 12–37 s) should simply be
+      replaced by the fast model given the 25 s budget.
 - [ ] **Faster AI answers.** `gemini-3.5-flash` takes 12–37 s per answer; a lite
       model measured ~5 s end-to-end, at the cost of slightly more confident
       wording. Needs its own per-model quota.
 - [ ] **Recalibrate search thresholds** (`MIN_SCORE`, `MAX_GAP_FROM_TOP`) now
       that summaries are English and there's real usage data.
-- [ ] **Backend tests.** There is no test suite; start with `extraction.py`
+- [ ] **More backend tests.** Only the fallback layer is tested (`tests/test_llm.py`); next: `extraction.py`
       (pure parsing, easy to fixture) and the search thresholds.
 - [ ] Android developer verification / Play Protect recognition, only if the
       app is shared beyond personal use (needs the package rename first).

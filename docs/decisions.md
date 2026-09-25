@@ -139,12 +139,30 @@ could leave zero results even when matches exist further down. Dates can't be
 
 | Decision | Why |
 |---|---|
-| **Separate model** from classification (`gemini-3.5-flash` vs `gemini-3.6-flash`) | Free-tier quota is per model, and the classifier model only gets 20 requests/day (+5/min). Sharing it would let answers starve new-item classification. |
+| **Separate models** from classification (the two chains share no model) | Free-tier quota is per model, and the classifier model only gets 20 requests/day (+5/min). Sharing one would let answers starve new-item classification. |
 | **Top 5 items as context** | More tokens = slower and costlier, and marginally relevant items tempt the model into forced connections. |
 | **No retrieval results → Gemini isn't called** | With empty context the model answers from general knowledge — exactly the hallucination RAG is meant to prevent. |
 | **Grounding + `[n]` citations**, invalid numbers stripped | The UI highlights sources by number; a fake number misleads more than none. |
 | **Prompt-injection defence** | Item text is written by strangers (scraped pages). It's wrapped in `<item>` tags and declared as data; the answer is display-only text that never triggers actions. Tested with a planted "IGNORE ALL PREVIOUS INSTRUCTIONS" item: the model answered normally. This reduces, not eliminates, the risk. |
 | **Answer on request** (button), not on every search | Each answer is a Gemini call against a small daily quota, and the result list is often enough. |
 
-Known limitation: `gemini-3.5-flash` answers take 12–37 s; a lite model was
-measured at ~5 s end-to-end (see `roadmap.md`).
+Known limitation: `gemini-3.5-flash` answers take 12–37 s; with the 25 s
+budget, slow answers now come from the fast fallback model instead (see below).
+
+## AI fallback (2026-09-25)
+
+Research (September 2026) across OpenRouter, LiteLLM, Portkey, pydantic-ai and
+engineers' post-mortems; the parts that shaped `backend/llm.py`:
+
+| Decision | Why |
+|---|---|
+| **Chains:** Classify `gemini-3.6-flash` → `gemini-3.5-flash-lite` → Groq `openai/gpt-oss-120b`; Answer `gemini-3.5-flash` → `gemini-3.1-flash-lite` → Groq `openai/gpt-oss-20b` | Gemini quotas are per project **and per model**, so a second Gemini model is the cheapest fallback (no new key, SDK or data recipient). Groq is last: free, OpenAI-compatible, strict JSON-schema output only on its `gpt-oss` models. The two chains share no model. Configurable via `CLASSIFY_MODELS` / `ANSWER_MODELS` because free-tier catalogues change without notice (Groq's free Llama 70B disappeared before we started). |
+| **Classify errors by cause, not status code** | The most common router bug: treating every 429 alike, so a daily quota gets retried every minute all day ([dev.to](https://dev.to/eleata/how-multi-provider-llm-routers-silently-fail-5fdd), [ellmer #1154](https://github.com/tidyverse/ellmer/issues/1154)). Gemini's daily-quota 429 carried `retryDelay: 11s` in our own logs, so the retry delay can't detect it — `quotaId` (`…PerDay…`) can. |
+| **Per-model state in memory** (rate-limited until / exhausted until midnight Pacific / unhealthy after 3 failures / unusable) | A small circuit breaker: known-dead models are skipped without a call. In-memory is enough with one worker; a restart just rediscovers state. |
+| **Retries in one place** (SDK retries off for generation) | Client retries under a fallback layer multiply attempts and delay ([pydantic-ai #3267](https://github.com/pydantic/pydantic-ai/issues/3267)). |
+| **One time budget per action + hard per-attempt deadline** | Fallback must not make a slow path slower. The answer budget (25 s) sits under the app's 30 s timeout; a live test showed an HTTP timeout isn't a call deadline (43.5 s against 30 s). Timed-out models aren't retried on the same request — a live test showed that retry eating the whole budget. |
+| **Validate every response** (same Pydantic schema for all providers) | "200 OK" with empty content or schema-violating JSON is common across providers ([Pinggy](https://pinggy.io/blog/openrouter_production_provider_routing_pitfalls/), [Requesty: 82% of 244 models pass](https://www.requesty.ai/blog/structured-outputs-across-llm-providers-the-compatibility-mess)); it counts as a failure. |
+| **Record who answered** (`classified_by`) + **upgrade job** | Every serious gateway reports the serving model. Because `raw_content` is kept, fallback summaries (and failed classifications) are redone by the primary within its spare quota — a fallback lowers quality only temporarily. Triggered by `GET /items`, not a timer, because the server sleeps when idle. |
+| **No gateway library** | LiteLLM/Portkey solve this at a scale we don't have, and a gateway holds every API key: LiteLLM 1.82.7/1.82.8 on PyPI shipped a credential stealer ([incident report](https://docs.litellm.ai/blog/security-update-march-2026)). Groq is called with the existing `httpx` — zero new runtime dependencies. |
+| **No embedding fallback** | Vectors from different models live in different spaces; a real-world fallback silently corrupted search ([openclaw #96534](https://github.com/openclaw/openclaw/issues/96534)). The search fallback will be keyword search instead (roadmap). |
+| **Privacy accepted:** content may reach Groq | Only after both Gemini models fail. Gemini's free tier itself may use content for training (outside the EU/UK). |

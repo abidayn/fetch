@@ -1,26 +1,31 @@
 """
 The "A + G" part of RAG: retrieved items are put into the prompt (Augmented),
-then Gemini writes a narrative answer from them (Generation).
+then a model writes a narrative answer from them (Generation).
 
-Same contract as classifier.py: failure -> None, never raises.
+Runs through the fallback chain in llm.py. Same contract as classifier.py:
+failure -> None, never raises.
 """
 
-import logging
 import re
 
-from google.genai import types
-
-from gemini import get_client
+import llm
 from schemas import SearchResult
 
-log = logging.getLogger(__name__)
-
-# Deliberately NOT the same model as classifier.py. Free-tier quota is counted
-# per model, and gemini-3.6-flash only gets 20 requests/DAY (+ 5/minute) --
-# found during testing, that quota gets used up by classifying items. A
-# separate model = answers don't eat into the classification budget for new
-# items (and vice versa).
-MODEL = "gemini-3.5-flash"
+# Ordered fallback chain, overridable with the ANSWER_MODELS env var. The models
+# deliberately differ from classifier.py's: free-tier quota is counted per
+# model (gemini-3.6-flash only gets 20 requests/DAY), so separate models mean
+# answers never eat into the classification budget for new items (and vice
+# versa). The second and third entries are fast models.
+CHAIN = llm.chain_from_env(
+    "ANSWER_MODELS",
+    "gemini:gemini-3.5-flash,gemini:gemini-3.1-flash-lite,groq:openai/gpt-oss-20b",
+)
+# The user is waiting, and the app gives up after 30 s and then RETRIES the
+# whole request -- so the whole chain must finish well inside that. Each
+# attempt is capped so a slow primary (12-37 s measured) leaves time for a
+# fast fallback instead of eating the entire budget.
+BUDGET_S = 25.0
+ATTEMPT_TIMEOUT_S = 15.0
 
 # Item content (title/summary) comes from scraped web pages -- written by
 # other people, not the user. A page could contain a sentence like "ignore
@@ -65,22 +70,17 @@ def _format_items(sources: list[SearchResult]) -> str:
 
 
 def generate_answer(query: str, sources: list[SearchResult]) -> str | None:
-    try:
-        response = get_client().models.generate_content(
-            model=MODEL,
-            contents=PROMPT.format(query=query, items=_format_items(sources)),
-            config=types.GenerateContentConfig(
-                temperature=0.3,  # a little flexible in wording, but still bound to the context
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-            ),
-        )
-    except Exception as e:  # network, timeout, quota, API error
-        log.warning("answer generation failed: %s", e)
+    result = llm.generate_text(
+        "answer",
+        PROMPT.format(query=query, items=_format_items(sources)),
+        CHAIN,
+        budget_s=BUDGET_S,
+        attempt_timeout_s=ATTEMPT_TIMEOUT_S,
+        temperature=0.3,  # a little flexible in wording, but still bound to the context
+    )
+    if result is None:
         return None
-
-    answer = (response.text or "").strip()
-    if not answer:
-        return None
+    answer = result.value
     # Citations pointing at items that don't exist (e.g. [7] with only 3
     # sources) are dropped: the UI uses these numbers to highlight sources, so
     # a fake number is more misleading than no number at all.

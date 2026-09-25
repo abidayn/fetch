@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+FOR THIS PROJECT: Everytime you execute any task, give a recap at the end of the message.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this is
@@ -32,11 +34,14 @@ venv/Scripts/python.exe -m alembic upgrade head              # apply migrations
 venv/Scripts/python.exe -m alembic revision --autogenerate -m "..."
 venv/Scripts/python.exe backfill_enrichment.py               # re-run unfinished enrichment
 venv/Scripts/python.exe backfill_enrichment.py --ids <uuid>…  # force re-enrich specific items from scratch
-venv/Scripts/python.exe backfill_enrichment.py --reclassify  # re-run Gemini on stored raw_content (after prompt/model changes)
+venv/Scripts/python.exe backfill_enrichment.py --reclassify  # re-run classification on stored raw_content (after prompt/model changes)
 venv/Scripts/python.exe backfill_embeddings.py [--all]       # fill NULL embeddings; --all after changing embedding model
+venv/Scripts/python.exe -m pip install -r requirements-dev.txt  # + pytest (dev only)
+venv/Scripts/python.exe -m pytest                            # all tests (tests/, no network)
+venv/Scripts/python.exe -m pytest tests/test_llm.py -k quota  # a subset
 ```
 
-Requires `backend/.env` (copy `.env.example`): `GEMINI_API_KEY`, `DATABASE_URL` (plain `postgresql://` — `database.py` rewrites it to the `psycopg` v3 driver), `JWT_SECRET_KEY`. `check_db.py` / `check_gemini.py` are throwaway connectivity checks. There is no backend test suite.
+Requires `backend/.env` (copy `.env.example`): `GEMINI_API_KEY`, `DATABASE_URL` (plain `postgresql://` — `database.py` rewrites it to the `psycopg` v3 driver), `JWT_SECRET_KEY`; optional `GROQ_API_KEY` (last-resort fallback) and `CLASSIFY_MODELS` / `ANSWER_MODELS` (chain overrides). `check_db.py` / `check_gemini.py` are throwaway connectivity checks. Tests cover the fallback layer only (`tests/test_llm.py`).
 
 **Dev and production share one Supabase database.** A local server and every backfill script read and write production data, and the Gemini free-tier quota (classifier model: 20 requests/day, 5/min) is shared with the server.
 
@@ -68,7 +73,9 @@ Without `API_BASE_URL`, `ApiClient` uses `http://10.0.2.2:8000` on Android (emul
 - **Categories** are a fixed `Literal` in `classifier.py` and served to the app via `GET /items/categories` — that is the single source of truth (no copy in Flutter). `/categories` must stay registered before `/{item_id}`.
 - **Editing** title/summary re-embeds the item; a failed re-embed keeps the old vector.
 - **Search** (`routers/search.py::retrieve`): cosine distance on pgvector HNSW with filters (category, created_at range) in the same SQL WHERE, `SET LOCAL hnsw.iterative_scan`, and two relevance cutoffs (`MIN_SCORE`, `MAX_GAP_FROM_TOP`) calibrated for `gemini-embedding-2` (evidence in `docs/decisions.md`) — recalibrate if the embedding model changes. `/search/answer` skips Gemini entirely when retrieval returns nothing.
-- **Gemini**: one lazy client in `gemini.py` (so Alembic can import models without the API key) with retries on 429/5xx. Classifier and answerer deliberately use different models because free-tier quota is per model. Embedding model/dimension (`embeddings.py`) must match `Vector(768)` in `models.py`; changing either requires a migration plus `backfill_embeddings.py --all`.
+- **AI fallback (`llm.py`)**: every *generation* call (classify, answer) goes through `llm.generate_json` / `llm.generate_text`, which walk an ordered chain (`classifier.CHAIN`, `answerer.CHAIN`: primary Gemini → second Gemini → Groq) — never call `get_client().models.generate_content` directly. It classifies each failure by cause (daily quota via Gemini's `quotaId`, per-minute limit, overload/timeout, bad request, model gone, invalid output), keeps per-model state in memory (single worker), enforces one time budget per action with a hard per-attempt deadline, and returns the value plus the model that produced it. Classifier and answer chains use disjoint models because free-tier quota is per model. The answer budget (25 s) must stay under the app's 30 s timeout, or the app retries the whole request.
+- **Provenance + upgrade**: `saved_items.classified_by` records which model (or `user`) wrote an item's title/summary/category. `enrichment.upgrade_fallback_items` (triggered by `GET /items`, throttled to every 15 min, 3 items per run, primary model only, stops on quota) re-classifies items not written by the primary or the user — upgrading fallback results and retrying failed classifications. Any edit via `PATCH /items/{id}` sets `user`, so edits are never overwritten.
+- **Gemini client**: one lazy client in `gemini.py` (so Alembic can import models without the API key). Its SDK retries apply to embeddings only; `llm.py` disables them per call so retries happen in one place. **Embeddings never fall back** to another model (vectors from different models aren't comparable): model/dimension (`embeddings.py`) must match `Vector(768)` in `models.py`; changing either requires a migration plus `backfill_embeddings.py --all`.
 - Ownership: other users' items return 404, not 403.
 
 ## Mobile architecture
@@ -85,4 +92,6 @@ Without `API_BASE_URL`, `ApiClient` uses `http://10.0.2.2:8000` on Android (emul
 - **Android splash freeze on cold-start share**: Flutter's implicit splash dismissal doesn't fire when the Activity is launched via the share-sheet trampoline. Fixed with `androidx.core:core-splashscreen` + `installSplashScreen()` in `MainActivity.kt` + `LaunchTheme` extending `Theme.SplashScreen` — don't remove any of the three.
 - **`INTERNET` permission must be in the main `AndroidManifest.xml`** — the debug manifest has it, so debug builds work while release builds can't reach the network.
 - **Share intent**: `launchMode="singleTask"`, and `ReceiveSharingIntent.instance.reset()` after handling, or the same share is re-read on every app open.
+- **Gemini's daily-quota 429 says "retry in ~11s"** even though the quota resets at midnight Pacific. Only the `quotaId` (`...PerDay...`) tells daily from per-minute limits — never infer it from the retry delay.
+- **HTTP timeouts aren't call deadlines**: they apply per connection phase, so a stalling server held a call for 43.5 s against a 30 s timeout. `llm.py` enforces a hard deadline per attempt, and never retries a timed-out model on the same request.
 - **Railway**: first request after Serverless sleep can return 502 (the client retries once); a deploy without root directory `backend` can't find the Dockerfile; `yt-dlp failed` in logs is YouTube blocking the datacenter IP (oEmbed fallback covers the title).

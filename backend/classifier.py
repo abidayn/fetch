@@ -1,22 +1,32 @@
 """
-Content classification via Gemini: extracted text -> title, summary, category.
+Content classification: extracted text -> title, summary, category.
 
-Contract: `classify(...)` returns a Classification or None. It never raises --
-Gemini down / timeout / odd response means the item is still saved, with the
-extracted data only (see enrichment.py).
+Runs through the fallback chain in llm.py (primary Gemini -> second Gemini ->
+Groq). Contract: `classify(...)` returns a Result (the Classification plus
+which model produced it) or None. It never raises -- all models failing means
+the item is still saved, with the extracted data only (see enrichment.py).
 """
 
 import logging
 from typing import Literal
 
-from google.genai import types
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
-from gemini import get_client
+import llm
 
 log = logging.getLogger(__name__)
 
-MODEL = "gemini-3.6-flash"
+# Ordered fallback chain, overridable with the CLASSIFY_MODELS env var. Every
+# model here must be able to follow the Classification schema. The first entry
+# is the PRIMARY: items classified by any other model are re-done by it later
+# (enrichment.upgrade_fallback_items), since raw_content is kept.
+CHAIN = llm.chain_from_env(
+    "CLASSIFY_MODELS",
+    "gemini:gemini-3.6-flash,gemini:gemini-3.5-flash-lite,groq:openai/gpt-oss-120b",
+)
+PRIMARY = CHAIN[0]
+# Background work, nobody waits: a generous budget for the whole chain.
+BUDGET_S = 60.0
 
 # A fixed list, not free text: categories the model makes up freely
 # ("Cooking" vs "Food & Recipes") would split one topic into many labels and
@@ -64,32 +74,23 @@ Content:
 {content}
 """
 
-def classify(url: str, platform: str, content: str) -> Classification | None:
+def classify(
+    url: str, platform: str, content: str, chain: list[llm.ModelRef] | None = None
+) -> "llm.Result[Classification] | None":
+    """`chain` overrides the default chain, e.g. [PRIMARY] to upgrade an item
+    that a fallback model classified."""
     if not content.strip():
         # With no content, the model can only guess from the URL -> hallucination.
         return None
 
-    try:
-        response = get_client().models.generate_content(
-            model=MODEL,
-            contents=PROMPT.format(platform=platform, url=url, content=content),
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=Classification,
-                temperature=0.2,  # consistent categorisation > creativity
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-            ),
-        )
-    except Exception as e:  # network, timeout, quota, API error
-        log.warning("gemini failed for %s: %s", url, e)
-        return None
-
-    # The SDK fills .parsed when the JSON matches the schema. The raw text is
-    # still validated again as a second safety net in case .parsed is empty.
-    if isinstance(response.parsed, Classification):
-        return response.parsed
-    try:
-        return Classification.model_validate_json(response.text or "")
-    except ValidationError as e:
-        log.warning("invalid gemini response for %s: %s | text=%r", url, e, response.text)
-        return None
+    result = llm.generate_json(
+        "classify",
+        PROMPT.format(platform=platform, url=url, content=content),
+        Classification,  # validated for every model: a category outside the list = failure
+        chain or CHAIN,
+        budget_s=BUDGET_S,
+        temperature=0.2,  # consistent categorisation > creativity
+    )
+    if result is None:
+        log.warning("classification failed for %s (all models)", url)
+    return result

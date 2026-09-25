@@ -59,6 +59,10 @@ class SavedItem(Base):
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     category: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Who wrote title/summary/category: "gemini:<model>", "groq:<model>", or
+    # "user". Lets fallback-model results be re-done by the primary model
+    # later without ever overwriting the user's own edits (see data-model.md).
+    classified_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(

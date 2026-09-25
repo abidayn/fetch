@@ -5,7 +5,8 @@ The source of truth for the table structure. The SQLAlchemy models
 other way round. The DDL is written as SQL for precision; the real
 implementation goes through SQLAlchemy but must be equivalent.
 
-Migrations so far: `9a2d76c47977` (both tables) → `66de89f6cd67` (HNSW index).
+Migrations so far: `9a2d76c47977` (both tables) → `66de89f6cd67` (HNSW index) →
+`b3f1c2d4e5a6` (`classified_by`).
 
 ---
 
@@ -45,6 +46,7 @@ CREATE TABLE saved_items (
     summary     TEXT        NULL,
     category    TEXT        NULL,
     raw_content TEXT        NULL,
+    classified_by TEXT      NULL,
 
     embedding   VECTOR(768) NULL,
 
@@ -105,6 +107,7 @@ the app show "processing" only for items that are really queued, and tell
 | `title` | `NULL` | Set by Gemini (or the extracted title if Gemini fails). Editable by the user. |
 | `summary`, `category` | `NULL` | Pure Gemini output, in English. `category` is always one of the fixed list in `classifier.py`. Editable by the user. |
 | `raw_content` | `NULL` | The raw extracted text (max 4000 chars), **kept on purpose** even after `summary` exists: if the prompt or model changes, items can be re-classified from it **without re-scraping** (`backfill_enrichment.py --reclassify`) — and scraping is fragile (pages change, get rate-limited, get deleted). Cheap insurance. |
+| `classified_by` | `NULL` | Who wrote the current title/summary/category: a model id like `gemini:gemini-3.6-flash` or `groq:openai/gpt-oss-120b`, or `user` after an edit in the app. `NULL` = unknown (items from before this column) or never classified. Items not written by the primary classifier model and not by `user` are re-classified by the primary later (`enrichment.upgrade_fallback_items`), so a fallback model's weaker summary is temporary and user edits are never overwritten. |
 | `embedding` | `VECTOR(768) NULL` | See below. |
 | `created_at` | `NOT NULL DEFAULT now()` | Display order, and the time-range filter in hybrid search. |
 | index on `user_id` | added | The most frequent query is "all items of user X". Postgres does **not** index foreign keys automatically. |

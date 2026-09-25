@@ -63,7 +63,7 @@ You're reading the Deadlift article in Chrome and tap **Share → Fetch**.
 | 3 | Backend checks the token, inserts a row with **only the URL**, replies `201` | `backend/routers/items.py` | §3 |
 | 4 | App shows "Saved — AI is organizing this…" and checks back every 3 s | `mobile/lib/widgets/save_result_sheet.dart` | §6 |
 | 5 | **Background:** the page is fetched and its text extracted | `backend/extraction.py` | §4.1 |
-| 6 | **Background:** Gemini reads the text → title, summary, category | `backend/classifier.py` | §4.2 |
+| 6 | **Background:** the AI (Gemini, or a fallback model) reads the text → title, summary, category | `backend/classifier.py` | §4.2, §9 |
 | 7 | **Background:** Gemini turns title + summary into 768 numbers | `backend/embeddings.py` | §4.3 |
 | 8 | Row is complete; the sheet flips to "Saved to Fitness & Health" | `backend/enrichment.py` | §3 |
 | 9 | Days later you search "lifting heavy weights" → Deadlift, score 0.73 | `backend/routers/search.py` | §5 |
@@ -116,13 +116,13 @@ decides what that means:
 | Failure | Result |
 |---|---|
 | Page blocks scraping | item saved with less text, maybe no summary |
-| Gemini classification fails | item keeps the extracted title, no summary |
+| Every classification model fails | item keeps the extracted title, no summary (retried automatically later, §9) |
 | Embedding fails during enrich | item saved without a vector (invisible to search until backfilled) |
 | Embedding fails during **search** | `503` "Search is unavailable, try again" — nothing to compare without a query vector |
-| Answer generation fails | results list still shown, just no AI paragraph |
+| Every answer model fails | results list still shown, just no AI paragraph |
 
-This is the pattern any AI fallback must follow too (§9): a fallback is just
-another way of turning "failed" into "degraded".
+The AI fallback follows the same pattern (§9): it's just another way of
+turning "failed" into "degraded" — and only when *every* model has failed.
 
 ### 3.3 Empty columns are the to-do list
 
@@ -152,20 +152,20 @@ systems to keep in sync.
 
 | Constraint | Effect you'll feel |
 |---|---|
-| Gemini classifier model: **20 requests/day, 5/minute** | ~20 new links/day get AI summaries; beyond that they wait for a backfill |
+| Gemini classifier model: **20 requests/day, 5/minute** | beyond ~20 new links/day, fallback models write the summaries, and the primary redoes them on a later day (§9) |
 | Railway sleeps after ~5 min idle | first request after a pause can take seconds or return one `502` (the app retries once) |
 | Supabase pauses after 1 week unused | after a week away, the first requests fail until it wakes |
 | **Dev and production share one database** | running the backend or any script on the laptop changes real data and uses the same Gemini quota |
 
 > **Connects to:** 3.1–3.3 are why the app shows the states it does (§6) and why
 > a Gemini outage is survivable (§8). 3.4 makes hybrid search possible (§5). 3.5
-> is the root of the AI-fallback question (§9).
+> is the reason the AI fallback exists (§9).
 
 ---
 
 ## 4. The AI side
 
-### 4.0 Gemini does three different jobs
+### 4.0 The AI does three different jobs
 
 This table is the single most important thing to understand before touching
 the AI:
@@ -173,18 +173,18 @@ the AI:
 | | **Classify** | **Embed** | **Answer** |
 |---|---|---|---|
 | File | `classifier.py` | `embeddings.py` | `answerer.py` |
-| Model | `gemini-3.6-flash` | `gemini-embedding-2` | `gemini-3.5-flash` |
+| Model(s) | chain: `gemini-3.6-flash` → `gemini-3.5-flash-lite` → Groq `gpt-oss-120b` | `gemini-embedding-2` only | chain: `gemini-3.5-flash` → `gemini-3.1-flash-lite` → Groq `gpt-oss-20b` |
 | Input | extracted page text | title + summary (or your search query) | your question + top 5 items |
 | Output | JSON: title, summary, category | 768 numbers | a short paragraph with `[1]`-style citations |
 | When | once per saved link, background | once per link **and once per search** | only when you tap "Summarise with AI" |
-| User waiting? | no | **yes, during search** | **yes** (12–37 s) |
-| On failure | item without summary | no vector / search returns 503 | results without answer |
-| Swappable for another model? | yes | **no** (see 4.3) | yes |
+| User waiting? | no | **yes, during search** | **yes** (budget: 25 s) |
+| On failure (all models) | item without summary, retried later | no vector / search returns 503 | results without answer |
+| Falls back to other models? | **yes** (§9) | **never** (see 4.3) | **yes** (§9) |
 
-They use **different models on purpose**: free-tier quota is counted *per
-model*, so answers can't eat the classification quota and vice versa. All three
-go through one shared client in `gemini.py` (20 s timeout, up to 3 attempts on
-429/5xx with growing delays).
+The two chains use **different models on purpose**: free-tier quota is counted
+*per model*, so answers can't eat the classification quota and vice versa.
+Classify and Answer go through the fallback layer `llm.py` (§9); embeddings call
+Gemini directly through the shared client in `gemini.py`.
 
 ### 4.1 Before the AI: extraction
 
@@ -259,8 +259,8 @@ most 2000, and for one-paragraph summaries 768 loses little while using 4× less
 space (≈ 3 KB per item).
 
 > **Connects to:** 4.1 feeds 4.2 (text in), 4.2 feeds 4.3 (title + summary in),
-> 4.3 produces the column that §5 searches. The "swappable?" row in 4.0 is the
-> basis of §9.
+> 4.3 produces the column that §5 searches. The "falls back?" row in 4.0 is
+> what §9 builds on.
 
 ---
 
@@ -379,7 +379,7 @@ summary → vector/thresholds → answer.
 
 > **Connects to:** R reads the `embedding`, `category` and `created_at` columns
 > written in §4; A+G reuse R exactly. The embedding call at the start of R is the
-> one AI call that can't be swapped for another model (§9).
+> one AI call that never falls back to another model (§9).
 
 ---
 
@@ -422,8 +422,8 @@ Secrets (`GEMINI_API_KEY`, `DATABASE_URL`, `JWT_SECRET_KEY`) live in Railway's
 variables and your local `backend/.env`, never in git. Step-by-step:
 [`operations.md`](operations.md).
 
-> **Connects to:** an AI fallback (§9) adds at least one more secret (another
-> API key) here, and a new failure point to monitor.
+> **Connects to:** the AI fallback (§9) adds one more secret here
+> (`GROQ_API_KEY`) and one more provider to watch in the logs.
 
 ---
 
@@ -431,86 +431,96 @@ variables and your local `backend/.env`, never in git. Step-by-step:
 
 | Event | What you'd see | What recovers by itself | What needs you |
 |---|---|---|---|
-| **Classifier quota used up** (20/day) | new saves show "AI summary didn't come through" | nothing — no automatic retry exists | run `backfill_enrichment.py` next day |
-| Classifier briefly overloaded (503) | same, occasionally | up to 3 attempts within the call (2 s, 4 s delays) | backfill if it still failed |
+| **Classifier quota used up** (20/day) | nothing visible: a fallback model writes the summary | the primary redoes those items on a later day (upgrade job, §9) | nothing |
+| Classifier overloaded (503) | nothing visible | one quick retry, then the next model | nothing |
+| **Every classification model fails** | "AI summary didn't come through" | retried by the upgrade job once the primary is back | nothing |
 | **Embedding quota/outage** | saves: item not findable; **search: "Search is unavailable"** | nothing | backfill embeddings; search is down until it's back |
-| Answer model quota used up | "The AI is unavailable right now" in the answer card | next day | nothing |
+| Answer model slow, overloaded or out of quota | answer comes from a faster fallback model | next request tries the primary again (unless its quota is known to be gone) | nothing |
+| Every answer model fails within 25 s | "The AI is unavailable right now" in the answer card | next request | nothing |
 | YouTube blocks the server | thinner YouTube items (title + channel, no description) | — | accepted trade-off |
 | Railway asleep | slow first request, maybe one 502 | app retries once | nothing |
 | Supabase paused (1 week idle) | everything fails | no | unpause in the Supabase dashboard |
 
 Two patterns stand out:
 
-- **Classification failures are quiet and delayed-recoverable** — nobody is
-  waiting, and `raw_content` is kept, so a later retry gives the same result.
-- **Search's embedding call is the single point of failure for the core
-  feature.** If it fails, there is no search at all.
+- **Classification failures are now self-healing** — nobody is waiting,
+  `raw_content` is kept, and the upgrade job retries with the primary model.
+- **Search's embedding call is still the single point of failure for the core
+  feature.** If it fails, there is no search at all (keyword-search fallback is
+  on the roadmap).
 
-> **Connects to:** this table is the input for §9 — a fallback is only worth
-> building where the failure hurts *and* the job is swappable.
+> **Connects to:** §9 explains how the self-healing rows work.
 
 ---
 
-## 9. Decision lens: an AI fallback
+## 9. The AI fallback (`llm.py`)
 
-### 9.1 What "fallback" can mean here
+When a model fails, Classify and Answer don't give up — they try the next model
+in their **chain**. Embeddings never do (§4.3). The research behind every rule
+below is summarised in [`decisions.md`](decisions.md) ("AI fallback").
 
-When the primary model fails, instead of degrading (§3.2), try something else.
-It plugs in at the point where each job calls Gemini — the three functions in
-§4.0 — so the rest of the system doesn't change.
+### 9.1 The chain
 
-Per job, from §4.0 and §8:
+```text
+classify("Deadlift…")
+  gemini-3.6-flash      → 429, quotaId "…PerDay…"  → blocked until midnight Pacific
+  gemini-3.5-flash-lite → valid JSON                → served_by=gemini:gemini-3.5-flash-lite
+  (groq gpt-oss-120b not needed)
+```
 
-| Job | User waiting? | Swap the model? | What a fallback buys |
-|---|---|---|---|
-| Classify | no | yes, but style/labels may differ slightly | fewer "no summary" items on busy days |
-| Answer | **yes** | yes | the answer card works when the quota is gone |
-| Embed (search) | **yes** | **no** — different model = different map (§4.3) | — (needs a different *kind* of fallback) |
+That's a real run from testing. Each model's answer must pass the same schema
+check (the `Classification` model, including the fixed category list) — a
+"successful" response that doesn't validate counts as a failure and moves on.
 
-### 9.2 The options
+### 9.2 Every failure is sorted by its cause
 
-| Option | How | Pros | Cons |
-|---|---|---|---|
-| **A. Another Gemini model, same key** | on quota error, retry with a second model name (quota is per model) | tiny code change, same SDK, same structured output, no new secret, no new company seeing your data | still Google's free tier — a full outage or key problem hits both |
-| **B. A different provider** (another AI API with a free tier) | second client + second key; same prompt | independent of Google; more total quota | new SDK/format, structured output support varies, another secret, your saved content goes to another company, quality varies more |
-| **C. Don't switch — retry later** | automatic backfill on a schedule | consistent labels; zero quality risk | slower: summaries arrive hours later |
-| **D. Keyword search as the search fallback** | if the query can't be embedded, fall back to plain text matching on title/summary | search never fully dies | worse results (matches words, not meaning) |
+| Cause | How it's recognised | What the chain does |
+|---|---|---|
+| Per-minute limit | Gemini 429 with a per-minute `quotaId`; Groq 429 + `retry-after` | one retry if the wait is ≤ 10 s, else next model |
+| **Daily quota gone** | Gemini 429 with `…PerDay…` in `quotaId` | skip the model until midnight Pacific; next model at once |
+| Overload / server error | 5xx | one retry after 2 s, then next model |
+| Too slow | timeout | next model immediately — a slow model will be slow again |
+| Our request is wrong | 400 | stop: no model would accept it |
+| Model gone / key rejected | 404 / 401 / 403 | skip it until the server restarts |
+| Useless answer | empty text, JSON failing the schema | next model |
 
-### 9.3 How to judge
+The daily-quota row is the subtle one: Gemini's daily-quota error still says
+"retry in ~11 s", so only the `quotaId` tells it apart from a per-minute limit.
 
-- **Is anyone waiting?** Fallbacks matter most where a person is waiting
-  (answer, search). For background work, waiting is cheap.
-- **Consistency:** two models label differently. Mixed styles are fine for
-  summaries; for *embeddings* mixing is broken.
-- **Quality floor:** a free fallback model may summarise worse. A bad summary is
-  stored permanently and also becomes the text that gets embedded (§5.3 quality chain).
-- **Privacy:** every provider you add receives your saved links' content.
-- **Operational cost:** each provider is another key, another quota, another
-  failure mode to understand.
-- **Complexity:** the fallback itself must follow "never raise" (§3.2) and must
-  not make a slow path slower (the answer already takes up to 37 s).
+### 9.3 Memory and time
 
-### 9.4 Recommendation (for you to challenge)
+- **Per-model state** lives in memory (one server worker): a model whose daily
+  quota is gone is skipped *instantly* for the rest of the day instead of being
+  called and failing on every request.
+- **One time budget per action:** 60 s for Classify (background), 25 s for
+  Answer — because the app gives up after 30 s and would resend the request.
+  Moving to the next model doesn't reset the clock, and every attempt has a
+  hard deadline (a stalled call once took 43.5 s despite a 30 s HTTP timeout).
 
-1. **Answers: option A first.** Add a second Gemini model for `answerer.py`;
-   it's the user-facing AI call with the simplest swap. Add option B only if A
-   proves insufficient in practice.
-2. **Classification: option C, with A as a cheap extra.** Nobody waits, and
-   `raw_content` is kept, so a scheduled retry gives the *primary* model's
-   quality a few hours later. A same-provider fallback model can cover busy days;
-   another provider adds risk for little gain here.
-3. **Embeddings: never swap the model. Option D for search** if search outages
-   become a real problem. Keyword search is a degraded but honest fallback; a
-   second embedding model would silently corrupt results.
+### 9.4 Fallback summaries are temporary
 
-The biggest lever may not be a fallback at all: the classifier's 20/day limit
-(§3.5) is the ceiling you hit first. Check whether another Gemini model offers
-a larger free quota for classification (limits differ per model and change
-over time) — that could remove most of the need.
+`saved_items.classified_by` records who wrote each item's summary:
+`gemini:gemini-3.6-flash`, a fallback model's id, `user` after you edit it, or
+empty if classification failed. When you open the app (at most every 15
+minutes), a background **upgrade job** re-classifies up to 3 items that the
+primary model didn't write — using the primary only, from the stored
+`raw_content`, stopping as soon as the primary's quota runs out. So:
 
-> **Connects to:** every point here comes from §3.2 (degrade, don't crash), §3.3
-> (retry via empty columns), §4.3 (one embedding model forever) and §8 (which
-> failures hurt).
+- a weaker fallback summary is replaced by the primary's on a later day;
+- an item whose classification failed completely gets retried automatically;
+- **your own edits are never touched** (`user`).
+
+### 9.5 What was deliberately not built
+
+- **No embedding fallback** — mixing vectors from two models silently breaks
+  search (§4.3). A keyword-search fallback for search is on the roadmap.
+- **No gateway library** (LiteLLM etc.) — one small module of our own instead of
+  a large dependency that would hold every API key (LiteLLM's PyPI releases
+  shipped a credential stealer in March 2026).
+
+> **Connects to:** §3.2 (never raise — the chain returns `None` when every model
+> fails), §3.3 (empty `classified_by` = to-do, like empty columns), §4.0 (which
+> jobs may fall back), §8 (the failures this turns into non-events).
 
 ---
 
@@ -519,12 +529,13 @@ over time) — that could remove most of the need.
 | To change… | Look at |
 |---|---|
 | What text is read from a link / a platform's chain | `backend/extraction.py` |
-| The summary prompt, categories, classifier model | `backend/classifier.py` |
+| The summary prompt, categories, classify chain | `backend/classifier.py` (or `CLASSIFY_MODELS` env var) |
 | The embedding model or what gets embedded | `backend/embeddings.py` (+ `backfill_embeddings.py --all`, §4.3) |
 | Search thresholds, filters, the SQL | `backend/routers/search.py` |
-| The answer prompt or model | `backend/answerer.py` |
-| Timeouts / retries for every Gemini call | `backend/gemini.py` |
-| What happens after a save | `backend/enrichment.py`, `backend/routers/items.py` |
+| The answer prompt, answer chain, time budget | `backend/answerer.py` (or `ANSWER_MODELS` env var) |
+| Fallback rules: error causes, retries, model state, deadlines | `backend/llm.py` (tests: `backend/tests/test_llm.py`) |
+| The shared Gemini client (used directly by embeddings) | `backend/gemini.py` |
+| What happens after a save, the upgrade job | `backend/enrichment.py`, `backend/routers/items.py` |
 | Database columns | `docs/data-model.md` first, then `backend/models.py`, then a migration |
 | Recovering failed items | `backend/backfill_enrichment.py`, `backend/backfill_embeddings.py` |
 | App screens | `mobile/lib/screens/`, `mobile/lib/widgets/` |
