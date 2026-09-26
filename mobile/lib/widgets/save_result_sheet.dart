@@ -184,8 +184,9 @@ class _ItemSheetState extends State<_ItemSheet> {
     _choose(folder: folder.id == _item.folderId && _item.folderBy == 'user' ? null : folder);
   }
 
-  Future<void> _createFolder() async {
-    final name = await showFolderNameDialog(context);
+  /// [initial] = the name typed in "Find a folder" that matched nothing.
+  Future<void> _createFolder(String initial) async {
+    final name = await showFolderNameDialog(context, initial: initial);
     if (name == null || !mounted) return;
     try {
       final folder = Folder.fromJson(await widget.apiClient.createFolder(name));
@@ -250,7 +251,9 @@ class _ItemSheetState extends State<_ItemSheet> {
     }
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+      // Bottom inset: with many folders the picker has a "Find a folder" box,
+      // and the keyboard it opens must not cover it.
+      padding: EdgeInsets.fromLTRB(20, 0, 20, 16 + MediaQuery.viewInsetsOf(context).bottom),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,

@@ -28,7 +28,11 @@ final _folders = [
 ];
 
 Future<void> _pump(WidgetTester tester, Item item,
-    {List<Folder>? folders, bool aiWorking = false, VoidCallback? onPickAi, ValueChanged<Folder>? onPickFolder, VoidCallback? onCreate}) {
+    {List<Folder>? folders,
+    bool aiWorking = false,
+    VoidCallback? onPickAi,
+    ValueChanged<Folder>? onPickFolder,
+    ValueChanged<String>? onCreate}) {
   return tester.pumpWidget(MaterialApp(
     home: Scaffold(
       body: SingleChildScrollView(
@@ -38,7 +42,7 @@ Future<void> _pump(WidgetTester tester, Item item,
           aiWorking: aiWorking,
           onPickAi: onPickAi ?? () {},
           onPickFolder: onPickFolder ?? (_) {},
-          onCreate: onCreate ?? () {},
+          onCreate: onCreate ?? (_) {},
         ),
       ),
     ),
@@ -66,16 +70,56 @@ void main() {
   });
 
   testWidgets('taps are passed up', (tester) async {
-    var ai = 0, create = 0;
+    var ai = 0;
     Folder? picked;
+    String? created;
     await _pump(tester, _item(),
-        onPickAi: () => ai++, onPickFolder: (f) => picked = f, onCreate: () => create++);
+        onPickAi: () => ai++, onPickFolder: (f) => picked = f, onCreate: (name) => created = name);
     await tester.tap(find.text('Let AI pick'));
     await tester.tap(find.text('Gym'));
     await tester.tap(find.text('New folder'));
     expect(ai, 1);
     expect(picked?.id, 'f2');
-    expect(create, 1);
+    expect(created, ''); // nothing typed -> empty name dialog
+  });
+
+  group('finding a folder', () {
+    final many = [
+      for (final n in ['Recipes', 'Gym', 'Home gym', 'Travel', 'Reading list', 'Side project', 'Music'])
+        Folder(id: n, name: n, itemCount: 0),
+    ];
+
+    test('filterFolders: case-insensitive, starts-with first, empty = all', () {
+      expect(filterFolders(many, 'GYM').map((f) => f.name), ['Gym', 'Home gym']);
+      expect(filterFolders(many, 'ym').map((f) => f.name), ['Gym', 'Home gym']);
+      expect(filterFolders(many, '  '), many);
+      expect(filterFolders(many, 'zzz'), isEmpty);
+    });
+
+    testWidgets('no search box with few folders', (tester) async {
+      await _pump(tester, _item(), folders: many.take(kFolderSearchThreshold).toList());
+      expect(find.widgetWithText(TextField, 'Find a folder'), findsNothing);
+    });
+
+    testWidgets('the search box filters the folder cards', (tester) async {
+      await _pump(tester, _item(), folders: many);
+      await tester.enterText(find.byType(TextField), 'gym');
+      await tester.pump();
+      expect(find.text('Gym'), findsOneWidget);
+      expect(find.text('Home gym'), findsOneWidget);
+      expect(find.text('Recipes'), findsNothing);
+      expect(find.text('Let AI pick'), findsOneWidget); // always shown
+      expect(find.text('New folder'), findsOneWidget); // something matched: plain "+"
+    });
+
+    testWidgets('no match offers to create the typed name', (tester) async {
+      String? created;
+      await _pump(tester, _item(), folders: many, onCreate: (name) => created = name);
+      await tester.enterText(find.byType(TextField), 'Databases');
+      await tester.pump();
+      await tester.tap(find.text('Create "Databases"'));
+      expect(created, 'Databases');
+    });
   });
 
   testWidgets('waiting for the AI, then placed by it', (tester) async {

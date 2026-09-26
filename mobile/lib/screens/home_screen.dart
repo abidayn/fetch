@@ -293,9 +293,14 @@ class HomeScreenState extends State<HomeScreen> {
 
   void _openSearch() {
     Navigator.of(context)
-        .push(MaterialPageRoute(builder: (_) => SearchScreen(apiClient: widget.apiClient)))
-        // Items can be edited/deleted from the search screen -- resync on return.
-        .then((_) => refresh());
+        .push<String>(MaterialPageRoute(builder: (_) => SearchScreen(apiClient: widget.apiClient)))
+        .then((folderId) {
+      // Search returns a folder id when the user tapped a matching folder:
+      // open it here, since home is where browsing by folder lives.
+      if (folderId != null && mounted) setState(() => _folderFilter = folderId);
+      // Items can be edited/deleted from the search screen -- resync on return.
+      refresh();
+    });
   }
 
   /// All · Unfiled · the user's folders (largest first) · + New folder.

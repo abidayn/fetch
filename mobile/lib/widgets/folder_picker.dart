@@ -14,7 +14,8 @@ const kOnAiContainer = Color(0xFF3B1778);
 ///
 /// Stateless: the parent (save_result_sheet.dart) owns the item and the
 /// folder list, sends the choice to the backend and passes the result back
-/// in. The item's folder fields say what's selected:
+/// in (only the "Find a folder" text lives in _FolderGrid below). The item's
+/// folder fields say what's selected:
 /// - folderBy 'ai'   -> the AI card (plus the folder it placed the item in)
 /// - folderBy 'user' -> that folder card
 /// - folderBy null   -> nothing (the item stays Unfiled)
@@ -32,7 +33,10 @@ class FolderPicker extends StatelessWidget {
 
   final VoidCallback onPickAi;
   final ValueChanged<Folder> onPickFolder;
-  final VoidCallback onCreate;
+
+  /// "+ New folder": gets the name typed in "Find a folder" when nothing
+  /// matched it (to pre-fill the name dialog), otherwise ''.
+  final ValueChanged<String> onCreate;
 
   const FolderPicker({
     super.key,
@@ -169,9 +173,48 @@ class FolderPicker extends StatelessWidget {
     if (item.folderId != null && !shown.any((f) => f.id == item.folderId)) {
       shown.insert(0, Folder(id: item.folderId!, name: item.folderName ?? 'Folder', itemCount: 1));
     }
+    return _FolderGrid(folders: shown, item: item, onPickFolder: onPickFolder, onCreate: onCreate);
+  }
+}
+
+/// Above this many folders, the grid gets a "Find a folder" box. Below it the
+/// box is just clutter: every folder already fits on screen.
+const kFolderSearchThreshold = 6;
+
+/// The folder cards plus "+ New folder" -- and, with many folders, a box that
+/// filters them by name (filterFolders). Stateful only to hold what's typed;
+/// the choice itself still goes up to the sheet.
+class _FolderGrid extends StatefulWidget {
+  final List<Folder> folders;
+  final Item item;
+  final ValueChanged<Folder> onPickFolder;
+  final ValueChanged<String> onCreate;
+  const _FolderGrid({required this.folders, required this.item, required this.onPickFolder, required this.onCreate});
+
+  @override
+  State<_FolderGrid> createState() => _FolderGridState();
+}
+
+class _FolderGridState extends State<_FolderGrid> {
+  final _ctrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final searchable = widget.folders.length > kFolderSearchThreshold;
+    final query = searchable ? _ctrl.text.trim() : '';
+    final shown = filterFolders(widget.folders, query);
+    // Searched and found nothing: offer to create exactly what was typed.
+    final createName = query.isNotEmpty && shown.isEmpty ? query : '';
+    final item = widget.item;
 
     const gap = 10.0;
-    return LayoutBuilder(builder: (context, constraints) {
+    final grid = LayoutBuilder(builder: (context, constraints) {
       final width = (constraints.maxWidth - 2 * gap) / 3;
       return Wrap(spacing: gap, runSpacing: gap, children: [
         for (final f in shown)
@@ -181,12 +224,36 @@ class FolderPicker extends StatelessWidget {
               folder: f,
               selected: f.id == item.folderId,
               byAi: f.id == item.folderId && item.folderBy == 'ai',
-              onTap: () => onPickFolder(f),
+              onTap: () => widget.onPickFolder(f),
             ),
           ),
-        SizedBox(width: width, child: _NewFolderCard(onTap: onCreate)),
+        SizedBox(width: width, child: _NewFolderCard(name: createName, onTap: () => widget.onCreate(createName))),
       ]);
     });
+    if (!searchable) return grid;
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      TextField(
+        controller: _ctrl,
+        onChanged: (_) => setState(() {}),
+        textInputAction: TextInputAction.search,
+        decoration: InputDecoration(
+          hintText: 'Find a folder',
+          prefixIcon: const Icon(Icons.search),
+          isDense: true,
+          border: const OutlineInputBorder(),
+          suffixIcon: _ctrl.text.isEmpty
+              ? null
+              : IconButton(
+                  tooltip: 'Clear',
+                  icon: const Icon(Icons.close),
+                  onPressed: () => setState(_ctrl.clear),
+                ),
+        ),
+      ),
+      const SizedBox(height: 10),
+      grid,
+    ]);
   }
 }
 
@@ -249,8 +316,10 @@ class _FolderCard extends StatelessWidget {
 }
 
 class _NewFolderCard extends StatelessWidget {
+  /// Non-empty = the searched name nothing matched: 'Create "name"'.
+  final String name;
   final VoidCallback onTap;
-  const _NewFolderCard({required this.onTap});
+  const _NewFolderCard({this.name = '', required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -266,11 +335,20 @@ class _NewFolderCard extends StatelessWidget {
         onTap: onTap,
         child: ConstrainedBox(
           constraints: const BoxConstraints(minHeight: 84),
-          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Icon(Icons.add, color: scheme.onSurfaceVariant),
-            const SizedBox(height: 4),
-            Text('New folder', style: TextStyle(color: scheme.onSurfaceVariant, fontWeight: FontWeight.w600)),
-          ]),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(Icons.add, color: scheme.onSurfaceVariant),
+              const SizedBox(height: 4),
+              Text(
+                name.isEmpty ? 'New folder' : 'Create "$name"',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: scheme.onSurfaceVariant, fontWeight: FontWeight.w600),
+              ),
+            ]),
+          ),
         ),
       ),
     );

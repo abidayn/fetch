@@ -249,6 +249,45 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
+  /// Folders whose name matches what's typed, updated on every keystroke
+  /// (matching is local, see filterFolders -- unlike item search, which waits
+  /// for enter because each search is an embedding call). Tapping one goes
+  /// back to home with that folder open: the search screen pops with its id.
+  Widget _folderMatches() {
+    final folders = _folders;
+    final query = _ctrl.text.trim();
+    if (folders == null || query.isEmpty) return const SizedBox.shrink();
+    final matches = filterFolders(folders, query);
+    if (matches.isEmpty) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        child: Text('Folders', style: theme.textTheme.labelLarge),
+      ),
+      SizedBox(
+        height: 52,
+        child: ListView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          children: [
+            for (final f in matches)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: ActionChip(
+                  avatar: const Icon(Icons.folder_outlined, size: 18),
+                  label: Text('${f.name} (${f.itemCount})'),
+                  tooltip: 'Open folder',
+                  onPressed: () => Navigator.pop(context, f.id),
+                ),
+              ),
+          ],
+        ),
+      ),
+      const Divider(height: 1),
+    ]);
+  }
+
   Widget _centered(List<Widget> children) => Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -270,7 +309,8 @@ class _SearchScreenState extends State<SearchScreen> {
       return _centered(const [
         Text(
           'Search in plain words, for example\n"spicy food recipes" or "workout videos".\n\n'
-          'Narrow it down with the category or date filters above.',
+          'Matching folders show up as you type. '
+          'Narrow it down with the folder, category or date filters above.',
           textAlign: TextAlign.center,
         ),
       ]);
@@ -281,7 +321,7 @@ class _SearchScreenState extends State<SearchScreen> {
         if (_hasFilter) ...[
           const SizedBox(height: 8),
           TextButton(
-            onPressed: () => _setFilter(clearCategory: true, range: _TimeRange.any),
+            onPressed: () => _setFilter(clearCategory: true, clearFolder: true, range: _TimeRange.any),
             child: const Text('Search without filters'),
           ),
         ],
@@ -315,13 +355,15 @@ class _SearchScreenState extends State<SearchScreen> {
           autofocus: true,
           textInputAction: TextInputAction.search,
           onSubmitted: (_) => _search(),
-          decoration: const InputDecoration(hintText: 'Search your saved items…', border: InputBorder.none),
+          onChanged: (_) => setState(() {}), // refresh the folder matches
+          decoration: const InputDecoration(hintText: 'Search items and folders…', border: InputBorder.none),
         ),
         actions: [IconButton(onPressed: _search, tooltip: 'Search', icon: const Icon(Icons.search))],
       ),
       body: Column(children: [
         _filterBar(),
         const Divider(height: 1),
+        _folderMatches(),
         Expanded(child: _body()),
       ]),
     );

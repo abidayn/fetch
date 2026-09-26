@@ -18,3 +18,26 @@ class Folder {
         itemCount: json['item_count'] as int? ?? 0,
       );
 }
+
+/// Folders whose name contains [query], ignoring case; names that START with
+/// it come first ("gym" -> "Gym" before "Home gym"), otherwise the input order
+/// is kept. An empty query returns everything.
+///
+/// Done in the app, not the backend: every folder name (at most 50) is
+/// already loaded via GET /folders, so matching is instant, works per
+/// keystroke, and costs no request or AI quota -- unlike item search.
+List<Folder> filterFolders(List<Folder> folders, String query) {
+  final q = query.trim().toLowerCase();
+  if (q.isEmpty) return folders;
+  final starts = <Folder>[];
+  final contains = <Folder>[];
+  for (final f in folders) {
+    final name = f.name.toLowerCase();
+    if (name.startsWith(q)) {
+      starts.add(f);
+    } else if (name.contains(q)) {
+      contains.add(f);
+    }
+  }
+  return [...starts, ...contains];
+}

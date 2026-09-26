@@ -422,7 +422,11 @@ A thin client: no business logic, it calls the API and shows states.
   isn't lost. A folder the user picked is never touched by the AI, and one the
   AI placed is never moved by a later re-classification. Home browses by
   folder (All · Unfiled · folders); items saved earlier can be filed with
-  ⋮ → Move to folder.
+  ⋮ → Move to folder. **Finding a folder** is matched in the app, not the
+  backend: all folder names (max 50) are already loaded, so it's instant and
+  free. The search screen shows matching folders as you type (tap → home opens
+  that folder), and with more than 6 folders the picker gets a "Find a folder"
+  box; when nothing matches, "+" becomes *Create "what you typed"*.
 - **Login token** is a JWT (a signed "this is user X, valid 7 days" string),
   stored in the phone's encrypted storage and sent with every request.
 
