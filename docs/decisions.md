@@ -166,3 +166,16 @@ engineers' post-mortems; the parts that shaped `backend/llm.py`:
 | **No gateway library** | LiteLLM/Portkey solve this at a scale we don't have, and a gateway holds every API key: LiteLLM 1.82.7/1.82.8 on PyPI shipped a credential stealer ([incident report](https://docs.litellm.ai/blog/security-update-march-2026)). Groq is called with the existing `httpx` — zero new runtime dependencies. |
 | **No embedding fallback** | Vectors from different models live in different spaces; a real-world fallback silently corrupted search ([openclaw #96534](https://github.com/openclaw/openclaw/issues/96534)). The search fallback will be keyword search instead (roadmap). |
 | **Privacy accepted:** content may reach Groq | Only after both Gemini models fail. Gemini's free tier itself may use content for training (outside the EU/UK). |
+
+## Folders (2026-09-26)
+
+| Decision | Why |
+|---|---|
+| **Folders next to categories**, not replacing them | Categories are the AI's fixed taxonomy (good for search filters, never user-defined); folders are the user's own grouping. Home browses by folder; search can filter by either. |
+| **The user decides; the AI only when asked** ("Let AI pick", first in the picker, own colour) | Most people file things their own way. Skipping the choice leaves the item Unfiled rather than letting the AI file it silently. |
+| **The folder suggestion rides on the classification call** | The classifier model has 20 requests/day. A separate "pick a folder" call would halve how many links can be saved per day. The prompt grows by the folder names only (capped at 50 folders). |
+| **The AI may propose a new folder**, created only when the user taps "Let AI pick" | With no fitting folder (or none at all) the AI would otherwise have nothing to offer. Storing the suggestion as a name (`folder_suggestion`), not a folder, means nothing appears in the folder list that the user didn't ask for. Measured on the first real run: a cooking video matched the existing "Recipes"; a Postgres docs page proposed a new "Databases". |
+| **`folder` is a plain string, matched case-insensitively in code** | Not an `Optional` (Groq's strict mode wants every field required) and not a per-user `Literal` (a name that matches nothing would fail validation and discard a good title and summary). |
+| **Separate `PUT /items/{id}/folder`**, row-locked on both sides | The sheet asks for a folder while enrichment is still running; `PATCH` refuses that (409) because enrichment would overwrite text. A folder choice doesn't clash with text, and `SELECT … FOR UPDATE` in both the endpoint and enrichment's final write means a tap at the moment enrichment finishes can't be lost. |
+| **Once placed, the AI never moves an item** | The upgrade job re-classifies fallback results later; letting it re-file items would make folders shift under the user. It only places items still waiting for the AI. |
+| **Deleting a folder un-files its items** (and clears `folder_by`) | Folders are groupings, the links are the data. Clearing `folder_by` stops the upgrade job from re-creating the folder the user just deleted. |

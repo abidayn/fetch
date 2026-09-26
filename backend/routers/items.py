@@ -6,23 +6,25 @@ from typing import get_args
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
+import folders
 from classifier import Category
 from database import get_db
 from deps import get_current_user
 from embeddings import embed_one, embedding_text
-from enrichment import enrich_item, upgrade_due, upgrade_fallback_items
-from models import SavedItem, User
-from schemas import ItemCreate, ItemPublic, ItemUpdate
+from enrichment import enrich_item, suggest_folder, upgrade_due, upgrade_fallback_items
+from models import Folder, SavedItem, User
+from schemas import ItemCreate, ItemFolderChoice, ItemPublic, ItemUpdate
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/items", tags=["items"])
 
 
-def _get_own_item(db: Session, item_id: uuid.UUID, user: User) -> SavedItem:
-    item = db.get(SavedItem, item_id)
+def _get_own_item(db: Session, item_id: uuid.UUID, user: User, lock: bool = False) -> SavedItem:
+    # lock=True: SELECT ... FOR UPDATE, held until commit (see set_item_folder).
+    item = db.get(SavedItem, item_id, with_for_update=lock)
     # 404 is also used when the item belongs to ANOTHER user -- not only when
     # it doesn't exist. Deliberate: a 403 would leak "this item exists, it's
     # just not yours", revealing that another user's data exists.
@@ -59,6 +61,9 @@ def list_items(
         select(SavedItem)
         .where(SavedItem.user_id == current_user.id)
         .order_by(SavedItem.created_at.desc())
+        # folder_name is in every item: load all folders in one extra query,
+        # not one lazy query per folder while serialising.
+        .options(selectinload(SavedItem.folder))
     ).all()
     # Opening the app is the upgrade job's trigger (the server sleeps when
     # idle, so a timer wouldn't fire). Throttled, and runs after the response.
@@ -130,6 +135,55 @@ def update_item(
             # than NULL (item drops out of search). The edit is still saved.
             log.warning("re-embedding item %s failed, keeping the old vector", item_id)
 
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.put("/{item_id}/folder", response_model=ItemPublic)
+def set_item_folder(
+    item_id: uuid.UUID,
+    payload: ItemFolderChoice,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """File an item: the user's own folder, "let the AI pick", or Unfiled.
+
+    A separate endpoint from PATCH because it must work WHILE the item is
+    still being enriched (the save sheet asks right after saving) -- PATCH
+    refuses that with 409, since enrichment would overwrite title/summary.
+    Enrichment never overwrites a folder choice: it locks the same row and
+    re-reads it before deciding (enrichment.lock_item), and this handler
+    holds that lock too, so the two can't interleave.
+
+    Doesn't touch classified_by: filing an item isn't editing its text, so
+    the upgrade job may still improve its summary later.
+    """
+    item = _get_own_item(db, item_id, current_user, lock=True)
+    if payload.ai:
+        item.folder_by = "ai"
+        item.folder = None
+        item.folder_id = None
+        if item.processed:
+            # Already classified: use the stored suggestion right away (no AI call).
+            folders.apply_ai_folder(db, item)
+            if item.folder_suggestion is None and item.has_content:
+                # Saved before folders existed, or classification failed:
+                # ask the AI now. The app keeps polling until the item is placed.
+                background_tasks.add_task(suggest_folder, item.id)
+        # Not processed yet: enrichment applies it when it finishes.
+    elif payload.folder_id is None:
+        item.folder_by = None
+        item.folder = None
+        item.folder_id = None
+    else:
+        folder = db.get(Folder, payload.folder_id)
+        if folder is None or folder.user_id != current_user.id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Folder not found.")
+        item.folder = folder
+        item.folder_id = folder.id
+        item.folder_by = "user"
     db.commit()
     db.refresh(item)
     return item

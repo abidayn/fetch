@@ -46,8 +46,8 @@ GEMINI_PER_MINUTE_429 = {"error": {
     ],
 }}
 
-VALID_JSON = '{"title": "Deadlift", "summary": "A strength exercise.", "category": "Fitness & Health"}'
-BAD_CATEGORY_JSON = '{"title": "Deadlift", "summary": "A strength exercise.", "category": "Gym Stuff"}'
+VALID_JSON = '{"title": "Deadlift", "summary": "A strength exercise.", "category": "Fitness & Health", "folder": "Gym"}'
+BAD_CATEGORY_JSON = '{"title": "Deadlift", "summary": "A strength exercise.", "category": "Gym Stuff", "folder": "Gym"}'
 
 
 @pytest.fixture(autouse=True)

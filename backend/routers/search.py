@@ -9,7 +9,7 @@ the URL and ends up in server / proxy logs. In the body, it doesn't.
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from database import get_db
 from deps import get_current_user
@@ -35,7 +35,7 @@ def retrieve(
 ) -> list[SearchResult]:
     """The R part: used by /search (the list) and /search/answer (answer material).
 
-    Hybrid: `filters` (category, created_at range) go into the same WHERE as
+    Hybrid: `filters` (category, folder, created_at range) go into the same WHERE as
     the vector distance -- one SQL query, not search-then-filter in Python.
     Filtering afterwards would drop results AFTER the LIMIT and could leave
     zero items even though matches exist at rank 11 and beyond.
@@ -62,6 +62,10 @@ def retrieve(
     if filters is not None:
         if filters.category is not None:
             conditions.append(SavedItem.category == filters.category)
+        if filters.folder_id is not None:
+            # Another user's folder id simply matches nothing (user_id is
+            # filtered above), so it needs no separate ownership check.
+            conditions.append(SavedItem.folder_id == filters.folder_id)
         if filters.created_after is not None:
             conditions.append(SavedItem.created_at >= filters.created_after)
         if filters.created_before is not None:
@@ -72,6 +76,7 @@ def retrieve(
         .where(*conditions)
         .order_by(distance)
         .limit(limit)
+        .options(selectinload(SavedItem.folder))  # for folder_name, in one query
     ).all()
 
     results = []

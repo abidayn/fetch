@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../api/api_client.dart';
+import '../models/folder.dart';
 import '../models/item.dart';
+import '../widgets/folder_name_dialog.dart';
 import '../widgets/item_tile.dart';
 import '../widgets/save_result_sheet.dart';
 import 'login_screen.dart';
@@ -29,9 +31,16 @@ class HomeScreenState extends State<HomeScreen> {
   ApiException? _error;
   bool _loading = false;
 
-  // null = "All". Browsing by category is filtered in the app: all of the
-  // user's items are already loaded for this list, so no extra request.
-  String? _category;
+  // Browsing by folder. null = "All", [_unfiled] = items in no folder,
+  // otherwise a folder id. Filtered in the app: all of the user's items are
+  // already loaded for this list, so no extra request.
+  String? _folderFilter;
+  static const _unfiled = '__unfiled__';
+
+  // The user's folders, loaded next to the items: the chips need their names,
+  // and empty folders (just created) should show too. Counts come from the
+  // loaded items instead, so they always match the list being filtered.
+  List<Folder>? _folders;
 
   // AI enrichment runs in the background for 5-10 seconds AFTER an item is
   // saved, so a new item first shows as "processing". While any item is
@@ -68,6 +77,9 @@ class HomeScreenState extends State<HomeScreen> {
         _items = items;
         _error = null;
       });
+      // Polls only reload the folder list when an item landed in a folder we
+      // don't know yet (the AI can create one while filing).
+      if (!fromPoll || items.any(_inUnknownFolder)) _loadFolders();
     } on ApiException catch (e) {
       if (!mounted) return;
       if (_items == null || e.isUnauthorized) {
@@ -101,6 +113,111 @@ class HomeScreenState extends State<HomeScreen> {
   Future<void> refresh() {
     _polls = 0;
     return _load();
+  }
+
+  bool _inUnknownFolder(Item it) =>
+      it.folderId != null && !(_folders?.any((f) => f.id == it.folderId) ?? false);
+
+  /// Failures are quiet: the items still show, and chips fall back to what
+  /// was loaded before (or just All/Unfiled).
+  Future<void> _loadFolders() async {
+    try {
+      final raw = await widget.apiClient.listFolders();
+      if (!mounted) return;
+      setState(() => _folders = raw.map((e) => Folder.fromJson(e as Map<String, dynamic>)).toList());
+    } on ApiException {
+      // Keep the old list.
+    }
+  }
+
+  Future<void> _createFolder() async {
+    final folder = await createFolderInteractively(context, widget.apiClient);
+    if (folder == null || !mounted) return;
+    setState(() {
+      _folders = [...?_folders, folder];
+      _folderFilter = folder.id;
+    });
+  }
+
+  Future<void> _renameFolder(Folder folder) async {
+    final name = await showFolderNameDialog(context,
+        title: 'Rename folder', action: 'Rename', initial: folder.name);
+    if (name == null || name == folder.name || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await widget.apiClient.renameFolder(folder.id, name);
+      await _loadFolders();
+      await refresh(); // the items carry the folder name too
+    } on ApiException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text("Couldn't rename: ${e.message}")));
+    }
+  }
+
+  Future<void> _deleteFolder(Folder folder) async {
+    final count = _items?.where((it) => it.folderId == folder.id).length ?? 0;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Delete "${folder.name}"?'),
+        content: Text(count == 0
+            ? 'The folder is empty.'
+            : 'Its ${count == 1 ? 'item stays' : '$count items stay'} saved and ${count == 1 ? 'moves' : 'move'} to Unfiled.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Theme.of(ctx).colorScheme.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete folder'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await widget.apiClient.deleteFolder(folder.id);
+      setState(() {
+        _folders = _folders?.where((f) => f.id != folder.id).toList();
+        if (_folderFilter == folder.id) _folderFilter = null;
+      });
+      await refresh();
+    } on ApiException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text("Couldn't delete the folder: ${e.message}")));
+    }
+  }
+
+  Future<void> _folderActions(Folder folder) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(title: Text(folder.name, style: Theme.of(ctx).textTheme.titleMedium)),
+          ListTile(
+            leading: const Icon(Icons.edit_outlined),
+            title: const Text('Rename'),
+            onTap: () => Navigator.pop(ctx, 'rename'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.delete_outline),
+            title: const Text('Delete folder'),
+            onTap: () => Navigator.pop(ctx, 'delete'),
+          ),
+        ]),
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'rename') await _renameFolder(folder);
+    if (action == 'delete') await _deleteFolder(folder);
+  }
+
+  Folder? get _selectedFolder {
+    final id = _folderFilter;
+    if (id == null || id == _unfiled) return null;
+    for (final f in _folders ?? const <Folder>[]) {
+      if (f.id == id) return f;
+    }
+    return null;
   }
 
   Future<void> _logout() async {
@@ -164,6 +281,8 @@ class HomeScreenState extends State<HomeScreen> {
     setState(() {
       _items = [for (final it in _items!) it.id == updated.id ? updated : it];
     });
+    // Moved into a folder the AI just created: fetch its name for the chips.
+    if (_inUnknownFolder(updated)) _loadFolders();
   }
 
   void _remove(Item removed) {
@@ -179,39 +298,52 @@ class HomeScreenState extends State<HomeScreen> {
         .then((_) => refresh());
   }
 
-  /// Chips for the categories the user actually has, largest first. Empty
-  /// categories aren't shown -- a chip that always leads to an empty screen
-  /// only confuses.
-  Widget _categoryChips(List<Item> items) {
+  /// All · Unfiled · the user's folders (largest first) · + New folder.
+  /// Unlike the old category chips, empty folders ARE shown: the user made
+  /// them on purpose. Long-press a folder chip to rename or delete it.
+  Widget _folderChips(List<Item> items) {
     final counts = <String, int>{};
+    var unfiled = 0;
     for (final it in items) {
-      final c = it.category;
-      if (c != null) counts[c] = (counts[c] ?? 0) + 1;
+      final id = it.folderId;
+      if (id == null) {
+        unfiled++;
+      } else {
+        counts[id] = (counts[id] ?? 0) + 1;
+      }
     }
-    final cats = counts.keys.toList()..sort((a, b) => counts[b]!.compareTo(counts[a]!));
+    final folders = [...?_folders]..sort((a, b) {
+        final byCount = (counts[b.id] ?? 0).compareTo(counts[a.id] ?? 0);
+        return byCount != 0 ? byCount : a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      });
+
+    Widget chip(String label, String? value, {VoidCallback? onLongPress}) => Padding(
+          padding: const EdgeInsets.only(right: 8),
+          child: GestureDetector(
+            onLongPress: onLongPress,
+            child: ChoiceChip(
+              label: Text(label),
+              selected: _folderFilter == value,
+              onSelected: (sel) => setState(() => _folderFilter = sel ? value : null),
+            ),
+          ),
+        );
+
     return SizedBox(
       height: 52,
       child: ListView(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         children: [
-          Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: ChoiceChip(
-              label: Text('All (${items.length})'),
-              selected: _category == null,
-              onSelected: (_) => setState(() => _category = null),
-            ),
+          chip('All (${items.length})', null),
+          // Without folders, "Unfiled" would just repeat "All".
+          if (folders.isNotEmpty && (unfiled > 0 || _folderFilter == _unfiled)) chip('Unfiled ($unfiled)', _unfiled),
+          for (final f in folders) chip('${f.name} (${counts[f.id] ?? 0})', f.id, onLongPress: () => _folderActions(f)),
+          ActionChip(
+            avatar: const Icon(Icons.add, size: 18),
+            label: const Text('New folder'),
+            onPressed: _createFolder,
           ),
-          for (final c in cats)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: ChoiceChip(
-                label: Text('$c (${counts[c]})'),
-                selected: _category == c,
-                onSelected: (sel) => setState(() => _category = sel ? c : null),
-              ),
-            ),
         ],
       ),
     );
@@ -272,26 +404,40 @@ class HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    // The selected category can disappear (its last item was deleted/edited).
-    final category = items.any((it) => it.category == _category) ? _category : null;
-    final visible = category == null ? items : items.where((it) => it.category == category).toList();
+    final filter = _folderFilter;
+    final List<Item> visible;
+    if (filter == null) {
+      visible = items;
+    } else if (filter == _unfiled) {
+      visible = items.where((it) => it.folderId == null).toList();
+    } else {
+      visible = items.where((it) => it.folderId == filter).toList();
+    }
 
     return Column(children: [
-      _categoryChips(items),
+      _folderChips(items),
       const Divider(height: 1),
       Expanded(
-        child: ListView.builder(
-          physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.only(bottom: 88), // room for the FAB
-          itemCount: visible.length,
-          itemBuilder: (context, i) => ItemTile(
-            key: ValueKey(visible[i].id),
-            apiClient: widget.apiClient,
-            item: visible[i],
-            onChanged: _replace,
-            onDeleted: _remove,
-          ),
-        ),
+        child: visible.isEmpty
+            ? _message(
+                icon: Icons.folder_open,
+                title: filter == _unfiled ? 'Everything is in a folder' : 'Nothing in this folder yet',
+                detail: filter == _unfiled
+                    ? null
+                    : 'Choose it when you save a link, or use ⋮ → Move to folder on any item.',
+              )
+            : ListView.builder(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.only(bottom: 88), // room for the FAB
+                itemCount: visible.length,
+                itemBuilder: (context, i) => ItemTile(
+                  key: ValueKey(visible[i].id),
+                  apiClient: widget.apiClient,
+                  item: visible[i],
+                  onChanged: _replace,
+                  onDeleted: _remove,
+                ),
+              ),
       ),
     ]);
   }
@@ -305,6 +451,14 @@ class HomeScreenState extends State<HomeScreen> {
             ? const PreferredSize(preferredSize: Size.fromHeight(2), child: LinearProgressIndicator(minHeight: 2))
             : null,
         actions: [
+          // The discoverable way to rename/delete the selected folder
+          // (long-pressing its chip does the same).
+          if (_selectedFolder case final folder?)
+            IconButton(
+              onPressed: () => _folderActions(folder),
+              tooltip: 'Folder options',
+              icon: const Icon(Icons.folder_open),
+            ),
           IconButton(onPressed: _openSearch, tooltip: 'Search', icon: const Icon(Icons.search)),
           IconButton(onPressed: _logout, tooltip: 'Log out', icon: const Icon(Icons.logout)),
         ],

@@ -4,6 +4,7 @@ import '../api/api_client.dart';
 import '../models/item.dart';
 import '../util/open_link.dart';
 import 'edit_item_sheet.dart';
+import 'save_result_sheet.dart';
 
 /// One item row, used on home and in search results.
 ///
@@ -34,7 +35,7 @@ class ItemTile extends StatelessWidget {
     if (!item.processed) {
       return const Text('Processing…', style: TextStyle(fontStyle: FontStyle.italic));
     }
-    final meta = [item.category, item.platform].whereType<String>().join(' · ');
+    final meta = [item.folderName, item.category, item.platform].whereType<String>().join(' · ');
     if (item.summary == null) {
       // Processed, but no readable content (e.g. a private post) -- show it
       // as is, not "processing" forever.
@@ -55,6 +56,11 @@ class ItemTile extends StatelessWidget {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Changes saved.')));
     }
   }
+
+  /// Works while the item is still processing too (unlike Edit): a folder
+  /// choice doesn't clash with the AI's output.
+  Future<void> _moveToFolder(BuildContext context) =>
+      showFolderSheet(context, apiClient, item, onChanged: onChanged);
 
   Future<void> _delete(BuildContext context) async {
     final ok = await showDialog<bool>(
@@ -101,12 +107,17 @@ class ItemTile extends StatelessWidget {
             tooltip: 'Actions',
             onSelected: (action) => switch (action) {
               'open' => openLink(context, item.url),
+              'folder' => _moveToFolder(context),
               'edit' => _edit(context),
               'delete' => _delete(context),
               _ => null,
             },
             itemBuilder: (_) => [
               const PopupMenuItem(value: 'open', child: ListTile(leading: Icon(Icons.open_in_new), title: Text('Open link'))),
+              const PopupMenuItem(
+                value: 'folder',
+                child: ListTile(leading: Icon(Icons.drive_file_move_outline), title: Text('Move to folder')),
+              ),
               PopupMenuItem(
                 value: 'edit',
                 // AI output that's still processing would overwrite the edit

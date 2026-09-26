@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/api_client.dart';
+import '../models/folder.dart';
 import '../models/item.dart';
 import '../widgets/item_tile.dart';
 
@@ -39,8 +40,10 @@ class _SearchScreenState extends State<SearchScreen> {
   // Structured hybrid-search filters -- sent to the backend and applied in the
   // same SQL as the vector search, not filtered from the results in the app.
   String? _category;
+  Folder? _folder;
   _TimeRange _range = _TimeRange.any;
   List<String>? _categories;
+  List<Folder>? _folders;
 
   // The AI answer is requested separately via a button, not automatically on
   // every search: each answer = one Gemini call (limited daily free-tier
@@ -57,8 +60,9 @@ class _SearchScreenState extends State<SearchScreen> {
   // Menu value for "all categories". Not null: PopupMenuButton treats a null
   // choice as "cancelled" and doesn't call onSelected.
   static const _allCategories = '';
+  static const _allFolders = ''; // same reason; folder ids are never empty
 
-  bool get _hasFilter => _category != null || _range != _TimeRange.any;
+  bool get _hasFilter => _category != null || _folder != null || _range != _TimeRange.any;
 
   @override
   void initState() {
@@ -67,6 +71,12 @@ class _SearchScreenState extends State<SearchScreen> {
       if (mounted) setState(() => _categories = c);
     }).catchError((_) {
       // Without the category list, the category filter is hidden; search still works.
+    });
+    widget.apiClient.listFolders().then((raw) {
+      final folders = raw.map((e) => Folder.fromJson(e as Map<String, dynamic>)).toList();
+      if (mounted) setState(() => _folders = folders);
+    }).catchError((_) {
+      // Same: without the folder list, the folder filter is hidden.
     });
   }
 
@@ -93,7 +103,7 @@ class _SearchScreenState extends State<SearchScreen> {
     });
     try {
       final raw = await widget.apiClient
-          .search(query, category: _category, createdAfter: _range.createdAfter);
+          .search(query, category: _category, folderId: _folder?.id, createdAfter: _range.createdAfter);
       if (!mounted || seq != _searchSeq) return;
       setState(() {
         _results = raw.map((e) => SearchResult.fromJson(e as Map<String, dynamic>)).toList();
@@ -105,10 +115,13 @@ class _SearchScreenState extends State<SearchScreen> {
     }
   }
 
-  void _setFilter({String? category, _TimeRange? range, bool clearCategory = false}) {
+  void _setFilter(
+      {String? category, Folder? folder, _TimeRange? range, bool clearCategory = false, bool clearFolder = false}) {
     setState(() {
       if (clearCategory) _category = null;
       if (category != null) _category = category;
+      if (clearFolder) _folder = null;
+      if (folder != null) _folder = folder;
       if (range != null) _range = range;
     });
     // The old results no longer match the filter -- search again if we already had.
@@ -122,7 +135,7 @@ class _SearchScreenState extends State<SearchScreen> {
     setState(() => _answerLoading = true);
     try {
       final data = await widget.apiClient
-          .searchAnswer(query, category: _category, createdAfter: _range.createdAfter);
+          .searchAnswer(query, category: _category, folderId: _folder?.id, createdAfter: _range.createdAfter);
       // The user searched again (different query/filter) while waiting -> stale.
       if (!mounted || seq != _searchSeq) return;
       setState(() {
@@ -154,12 +167,27 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Widget _filterBar() {
     final cats = _categories;
+    final folders = _folders;
     return SizedBox(
       height: 52,
       child: ListView(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         children: [
+          if (folders != null && folders.isNotEmpty) ...[
+            PopupMenuButton<String>(
+              tooltip: 'Filter by folder',
+              onSelected: (id) => id == _allFolders
+                  ? _setFilter(clearFolder: true)
+                  : _setFilter(folder: folders.firstWhere((f) => f.id == id)),
+              itemBuilder: (_) => [
+                const PopupMenuItem(value: _allFolders, child: Text('All folders')),
+                for (final f in folders) PopupMenuItem(value: f.id, child: Text(f.name)),
+              ],
+              child: _FilterPill(label: _folder?.name ?? 'All folders', active: _folder != null),
+            ),
+            const SizedBox(width: 8),
+          ],
           if (cats != null)
             PopupMenuButton<String>(
               tooltip: 'Filter by category',
@@ -181,7 +209,7 @@ class _SearchScreenState extends State<SearchScreen> {
           if (_hasFilter) ...[
             const SizedBox(width: 4),
             TextButton(
-              onPressed: () => _setFilter(clearCategory: true, range: _TimeRange.any),
+              onPressed: () => _setFilter(clearCategory: true, clearFolder: true, range: _TimeRange.any),
               child: const Text('Clear filters'),
             ),
           ],

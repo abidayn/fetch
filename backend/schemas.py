@@ -14,6 +14,8 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from classifier import Category
+from folders import MAX_NAME_LEN as MAX_FOLDER_NAME_LEN
+from folders import normalize_name as normalize_folder_name
 
 BCRYPT_MAX_BYTES = 72
 
@@ -76,6 +78,23 @@ class ItemUpdate(BaseModel):
         return v.strip() if isinstance(v, str) else v
 
 
+class ItemFolderChoice(BaseModel):
+    """PUT /items/{id}/folder -- one of:
+    {"ai": true}              let the AI pick (applied now, or when enrichment finishes)
+    {"folder_id": "<uuid>"}   the user's own pick
+    {"folder_id": null}       un-file (back to Unfiled)
+    """
+
+    ai: bool = False
+    folder_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def one_choice(self):
+        if self.ai and self.folder_id is not None:
+            raise ValueError("Choose either a folder or AI, not both.")
+        return self
+
+
 class ItemPublic(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -87,6 +106,34 @@ class ItemPublic(BaseModel):
     category: str | None
     processed: bool  # False = enrichment not finished (UI shows "processing")
     has_content: bool  # False = the link's content couldn't be read (see SavedItem.has_content)
+    # Folder state (data-model.md, "Folders: who decides"). folder_id NULL =
+    # Unfiled. folder_by "ai" + folder_id NULL = the AI hasn't placed it yet.
+    # folder_suggestion = the AI's proposed name, shown on "Let AI pick"
+    # before the user taps it.
+    folder_id: uuid.UUID | None
+    folder_name: str | None
+    folder_by: str | None
+    folder_suggestion: str | None
+    created_at: datetime
+
+
+class FolderIn(BaseModel):
+    """POST /folders and PATCH /folders/{id}."""
+
+    name: str = Field(min_length=1, max_length=MAX_FOLDER_NAME_LEN)
+
+    # mode="before": normalise BEFORE the length checks, so "   " is rejected
+    # as empty and inner runs of spaces don't count toward the limit.
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize(cls, v):
+        return normalize_folder_name(v) if isinstance(v, str) else v
+
+
+class FolderPublic(BaseModel):
+    id: uuid.UUID
+    name: str
+    item_count: int
     created_at: datetime
 
 
@@ -97,6 +144,7 @@ class SearchFilters(BaseModel):
     to be a column."""
 
     category: Category | None = None
+    folder_id: uuid.UUID | None = None
     created_after: datetime | None = None  # inclusive
     created_before: datetime | None = None  # exclusive
 

@@ -1,8 +1,8 @@
 # CLAUDE.md
 
-FOR THIS PROJECT: Everytime you execute any task, give a recap at the end of the message.
-
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+**Every time you execute a task, end the message with a recap.**
 
 ## What this is
 
@@ -39,9 +39,10 @@ venv/Scripts/python.exe backfill_embeddings.py [--all]       # fill NULL embeddi
 venv/Scripts/python.exe -m pip install -r requirements-dev.txt  # + pytest (dev only)
 venv/Scripts/python.exe -m pytest                            # all tests (tests/, no network)
 venv/Scripts/python.exe -m pytest tests/test_llm.py -k quota  # a subset
+venv/Scripts/python.exe -m alembic check                     # models.py matches the database?
 ```
 
-Requires `backend/.env` (copy `.env.example`): `GEMINI_API_KEY`, `DATABASE_URL` (plain `postgresql://` — `database.py` rewrites it to the `psycopg` v3 driver), `JWT_SECRET_KEY`; optional `GROQ_API_KEY` (last-resort fallback) and `CLASSIFY_MODELS` / `ANSWER_MODELS` (chain overrides). `check_db.py` / `check_gemini.py` are throwaway connectivity checks. Tests cover the fallback layer only (`tests/test_llm.py`).
+Requires `backend/.env` (copy `.env.example`): `GEMINI_API_KEY`, `DATABASE_URL` (plain `postgresql://` — `database.py` rewrites it to the `psycopg` v3 driver), `JWT_SECRET_KEY`; optional `GROQ_API_KEY` (last-resort fallback) and `CLASSIFY_MODELS` / `ANSWER_MODELS` (chain overrides). `check_db.py` / `check_gemini.py` are throwaway connectivity checks. Tests cover the fallback layer (`tests/test_llm.py`) and the folder logic (`tests/test_folders.py`); neither touches the network or the database.
 
 **Dev and production share one Supabase database.** A local server and every backfill script read and write production data, and the Gemini free-tier quota (classifier model: 20 requests/day, 5/min) is shared with the server.
 
@@ -54,8 +55,8 @@ flutter pub get
 flutter run                                                   # talks to local backend
 flutter run --dart-define=API_BASE_URL=https://<backend>      # talks to a deployed backend
 flutter analyze
-flutter test                                                  # single smoke test
-flutter test test/widget_test.dart
+flutter test                                                  # smoke test + folder picker widget tests
+flutter test test/folder_picker_test.dart
 ```
 
 Without `API_BASE_URL`, `ApiClient` uses `http://10.0.2.2:8000` on Android (emulator alias for host localhost) and `127.0.0.1:8000` elsewhere; a physical device needs the define.
@@ -66,14 +67,15 @@ Without `API_BASE_URL`, `ApiClient` uses `http://10.0.2.2:8000` on Android (emul
 
 ## Backend architecture
 
-- `main.py` wires three routers: `routers/auth.py` (register/login, JWT via `security.py`), `routers/items.py` (CRUD), `routers/search.py` (`POST /search`, `POST /search/answer`). Auth is `deps.get_current_user` (Bearer JWT → `User`; every failure is the same 401).
+- `main.py` wires four routers: `routers/auth.py` (register/login, JWT via `security.py`), `routers/items.py` (CRUD + `PUT /items/{id}/folder`), `routers/folders.py` (folder CRUD with item counts), `routers/search.py` (`POST /search`, `POST /search/answer`). Auth is `deps.get_current_user` (Bearer JWT → `User`; every failure is the same 401).
 - **Save flow**: `POST /items` stores only the URL and returns 201 immediately, then schedules `enrichment.enrich_item` as a BackgroundTask (with its own DB session). Enrichment = `extraction.extract` (per-platform fallback chains: YouTube yt-dlp → YouTube oEmbed → OG, since YouTube blocks yt-dlp from Railway's datacenter IPs; TikTok oEmbed → `/embed/v2/<id>` page JSON, which also covers photo posts; Instagram OG fetched with the `facebookexternalhit` crawler UA, since normal browsers get an empty JS shell; generic OG. Generic platform titles/descriptions are filtered as junk so Gemini never summarises the platform itself) → `classifier.classify` (Gemini structured output: title, English summary, category) → `embeddings.embed_one` on title+summary.
 - **"Never raise" contract**: `extract`, `classify`, `embed*`, and `generate_answer` return thin data or `None` on failure instead of raising. Callers decide what that means (keep NULL for backfill, or return 503 on search). Preserve this when touching them.
 - **Processing state is encoded in `raw_content`**, no status column: `NULL` = not yet processed, `""` = processed but nothing extractable, otherwise extracted text. `SavedItem.processed` and `SavedItem.has_content` (lets the app tell "link unreadable" from "AI failed") derive from this; `PATCH /items/{id}` returns 409 while unprocessed (enrichment would overwrite edits). NULL `embedding`/`summary` act as work queues for the backfill scripts.
 - **Categories** are a fixed `Literal` in `classifier.py` and served to the app via `GET /items/categories` — that is the single source of truth (no copy in Flutter). `/categories` must stay registered before `/{item_id}`.
 - **Editing** title/summary re-embeds the item; a failed re-embed keeps the old vector.
-- **Search** (`routers/search.py::retrieve`): cosine distance on pgvector HNSW with filters (category, created_at range) in the same SQL WHERE, `SET LOCAL hnsw.iterative_scan`, and two relevance cutoffs (`MIN_SCORE`, `MAX_GAP_FROM_TOP`) calibrated for `gemini-embedding-2` (evidence in `docs/decisions.md`) — recalibrate if the embedding model changes. `/search/answer` skips Gemini entirely when retrieval returns nothing.
-- **AI fallback (`llm.py`)**: every *generation* call (classify, answer) goes through `llm.generate_json` / `llm.generate_text`, which walk an ordered chain (`classifier.CHAIN`, `answerer.CHAIN`: primary Gemini → second Gemini → Groq) — never call `get_client().models.generate_content` directly. It classifies each failure by cause (daily quota via Gemini's `quotaId`, per-minute limit, overload/timeout, bad request, model gone, invalid output), keeps per-model state in memory (single worker), enforces one time budget per action with a hard per-attempt deadline, and returns the value plus the model that produced it. Classifier and answer chains use disjoint models because free-tier quota is per model. The answer budget (25 s) must stay under the app's 30 s timeout, or the app retries the whole request.
+- **Folders** (`folders.py`; rules in `docs/data-model.md` "Folders: who decides"): user-owned, next to categories. The classification call also returns `folder` (an existing name or a proposed new one), stored as the text `folder_suggestion` — no extra AI call, and nothing is created until the user taps "Let AI pick". `folder_by` = `user` | `ai` | NULL; `ai` + NULL `folder_id` = waiting for the AI. `folders.apply_ai_folder` turns the suggestion into a folder (case-insensitive match, else create; max 50) and must run with the item row locked: `PUT /items/{id}/folder` locks it, and every enrichment/upgrade write re-reads it via `enrichment.lock_item` (`refresh(with_for_update=True)`) — keep slow network calls (classify, embed) *before* that lock. The AI never moves a placed item or touches `folder_by='user'`; deleting a folder also clears `folder_by`, or the upgrade job would re-create it. A folder choice doesn't set `classified_by='user'`.
+- **Search** (`routers/search.py::retrieve`): cosine distance on pgvector HNSW with filters (category, folder, created_at range) in the same SQL WHERE, `SET LOCAL hnsw.iterative_scan`, and two relevance cutoffs (`MIN_SCORE`, `MAX_GAP_FROM_TOP`) calibrated for `gemini-embedding-2` (evidence in `docs/decisions.md`) — recalibrate if the embedding model changes. `/search/answer` skips Gemini entirely when retrieval returns nothing.
+- **AI fallback (`llm.py`)**: every *generation* call (classify, answer) goes through `llm.generate_json` / `llm.generate_text`, which walk an ordered chain (`classifier.CHAIN`, `answerer.CHAIN`: primary Gemini → second Gemini → Groq) — never call `get_client().models.generate_content` directly. It classifies each failure by cause (daily quota via Gemini's `quotaId`, per-minute limit, overload/timeout, bad request, model gone, invalid output), keeps per-model state in memory (single worker), enforces one time budget per action with a hard per-attempt deadline, and returns the value plus the model that produced it. Classifier and answer chains use disjoint models because free-tier quota is per model. The answer budget (25 s, 15 s per attempt) must stay under the app's 30 s timeout, or the app retries the whole request; classification runs in the background and gets 60 s.
 - **Provenance + upgrade**: `saved_items.classified_by` records which model (or `user`) wrote an item's title/summary/category. `enrichment.upgrade_fallback_items` (triggered by `GET /items`, throttled to every 15 min, 3 items per run, primary model only, stops on quota) re-classifies items not written by the primary or the user — upgrading fallback results and retrying failed classifications. Any edit via `PATCH /items/{id}` sets `user`, so edits are never overwritten.
 - **Gemini client**: one lazy client in `gemini.py` (so Alembic can import models without the API key). Its SDK retries apply to embeddings only; `llm.py` disables them per call so retries happen in one place. **Embeddings never fall back** to another model (vectors from different models aren't comparable): model/dimension (`embeddings.py`) must match `Vector(768)` in `models.py`; changing either requires a migration plus `backfill_embeddings.py --all`.
 - Ownership: other users' items return 404, not 403.
@@ -81,7 +83,9 @@ Without `API_BASE_URL`, `ApiClient` uses `http://10.0.2.2:8000` on Android (emul
 ## Mobile architecture
 
 - `lib/api/api_client.dart` is the only place that does HTTP; it attaches the token from `token_storage.dart` (flutter_secure_storage), applies a 30s timeout, and retries once on transient failures (network, 502/503/504) — but **never retries `POST /items`** (could double-save) or register. Errors surface as `ApiException` (`statusCode` 0 = offline/timeout); backend `detail` messages are shown to the user as-is.
+- **Waiting for enrichment is client-side polling** (no push): `save_result_sheet.dart` re-fetches the item every 3 s until `processed` — and, after "Let AI pick", until the AI has placed it (gives up after 60 s) — and `home_screen.dart` reloads the list every 4 s while any item is unprocessed, capped at 10 polls. Each list reload is a `GET /items`, which is also what triggers the throttled upgrade pass — keep that throttle if you change polling.
 - `lib/main.dart` listens for shared links via `receive_sharing_intent` for both warm (stream) and cold-start (`getInitialMedia`) shares, and uses global Navigator/ScaffoldMessenger/HomeScreen keys to show the save sheet and refresh from outside the widget tree. No state-management library.
+- **Folder picker** (`widgets/folder_picker.dart`) is stateless; `save_result_sheet.dart` owns the item and sends choices optimistically, dropping replies/polls from an older choice (`_version`). The same sheet serves the tile's "Move to folder" (`showFolderSheet`). Home browses by folder; counts come from the loaded items, names from `GET /folders`.
 - Screens in `lib/screens/`, bottom sheets and tiles in `lib/widgets/`.
 
 ## Gotchas (each one bit us before)

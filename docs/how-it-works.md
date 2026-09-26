@@ -61,11 +61,11 @@ You're reading the Deadlift article in Chrome and tap **Share → Fetch**.
 | 1 | Android hands the URL to Fetch (even if Fetch wasn't running) | `mobile/lib/main.dart` | §6 |
 | 2 | App sends `POST /items {"url": "…/wiki/Deadlift"}` with your login token | `mobile/lib/api/api_client.dart` | §6 |
 | 3 | Backend checks the token, inserts a row with **only the URL**, replies `201` | `backend/routers/items.py` | §3 |
-| 4 | App shows "Saved — AI is organizing this…" and checks back every 3 s | `mobile/lib/widgets/save_result_sheet.dart` | §6 |
+| 4 | App shows "Saved — AI is organizing this…" plus the folder picker, and checks back every 3 s. You tap **Let AI pick** (or one of your folders, or nothing) | `mobile/lib/widgets/save_result_sheet.dart` | §6 |
 | 5 | **Background:** the page is fetched and its text extracted | `backend/extraction.py` | §4.1 |
-| 6 | **Background:** the AI (Gemini, or a fallback model) reads the text → title, summary, category | `backend/classifier.py` | §4.2, §9 |
+| 6 | **Background:** the AI (Gemini, or a fallback model) reads the text → title, summary, category, and a folder suggestion | `backend/classifier.py` | §4.2, §9 |
 | 7 | **Background:** Gemini turns title + summary into 768 numbers | `backend/embeddings.py` | §4.3 |
-| 8 | Row is complete; the sheet flips to "Saved to Fitness & Health" | `backend/enrichment.py` | §3 |
+| 8 | Row is complete; because you asked the AI, the item is filed and the sheet flips to "Saved to Gym" | `backend/enrichment.py`, `backend/folders.py` | §3, §6 |
 | 9 | Days later you search "lifting heavy weights" → Deadlift, score 0.73 | `backend/routers/search.py` | §5 |
 
 After step 8, this is the real row in the database:
@@ -229,6 +229,15 @@ text. Three techniques make the output reliable enough to store directly:
 The prompt also says: use only the given content, keep the title's original
 language, write the summary in English, ignore sponsor text. For Deadlift:
 `title = "Deadlift - Wikipedia"`, `category = "Fitness & Health"`.
+
+The same call also answers **`folder`**: the prompt lists the user's folder
+names (JSON-quoted, since they're the user's own text), and the model returns
+one of them, or proposes a new 1–3 word name when none fits (or the user has no
+folders yet). This piggybacks on a call that happens anyway, so folders cost no
+extra quota. Unlike `category`, `folder` is a plain string, not a fixed list:
+the list differs per user, and a folder name that matches nothing must not
+throw away a good title and summary. It's stored as `folder_suggestion` and
+only becomes a real folder if the user taps "Let AI pick" (§6).
 
 ### 4.3 Embeddings: meaning as coordinates
 
@@ -401,6 +410,19 @@ A thin client: no business logic, it calls the API and shows states.
 - **States follow §3.3.** "Processing…" while `processed = false` (the home list
   re-checks every 4 s, up to 10 times); the save sheet distinguishes
   "couldn't read this link" from "AI summary didn't come through" via `has_content`.
+- **Folders (`folder_picker.dart`, `backend/folders.py`).** The save sheet
+  offers **Let AI pick** first (in its own colour), then the user's folders,
+  then **+ New folder**; choosing is optional and skipping leaves the item
+  Unfiled. The choice goes to `PUT /items/{id}/folder`, which, unlike editing,
+  works while enrichment is still running. Tapped before the AI finished → the
+  backend remembers "AI decides" (`folder_by = 'ai'`) and enrichment files the
+  item when it lands; tapped after → the stored suggestion is applied at once
+  (matched to an existing folder ignoring case, or created). Both paths lock
+  the item's row first, so a tap at the exact moment enrichment finishes
+  isn't lost. A folder the user picked is never touched by the AI, and one the
+  AI placed is never moved by a later re-classification. Home browses by
+  folder (All · Unfiled · folders); items saved earlier can be filed with
+  ⋮ → Move to folder.
 - **Login token** is a JWT (a signed "this is user X, valid 7 days" string),
   stored in the phone's encrypted storage and sent with every request.
 
@@ -536,6 +558,8 @@ primary model didn't write — using the primary only, from the stored
 | Fallback rules: error causes, retries, model state, deadlines | `backend/llm.py` (tests: `backend/tests/test_llm.py`) |
 | The shared Gemini client (used directly by embeddings) | `backend/gemini.py` |
 | What happens after a save, the upgrade job | `backend/enrichment.py`, `backend/routers/items.py` |
+| Folders: who decides, AI suggestion → real folder, limits | `backend/folders.py`, `backend/routers/folders.py`, `PUT /items/{id}/folder` in `backend/routers/items.py` (tests: `backend/tests/test_folders.py`) |
+| The folder picker on the save sheet | `mobile/lib/widgets/folder_picker.dart`, `mobile/lib/widgets/save_result_sheet.dart` |
 | Database columns | `docs/data-model.md` first, then `backend/models.py`, then a migration |
 | Recovering failed items | `backend/backfill_enrichment.py`, `backend/backfill_embeddings.py` |
 | App screens | `mobile/lib/screens/`, `mobile/lib/widgets/` |

@@ -6,7 +6,7 @@ other way round. The DDL is written as SQL for precision; the real
 implementation goes through SQLAlchemy but must be equivalent.
 
 Migrations so far: `9a2d76c47977` (both tables) → `66de89f6cd67` (HNSW index) →
-`b3f1c2d4e5a6` (`classified_by`).
+`b3f1c2d4e5a6` (`classified_by`) → `c4d2e8f1a9b7` (`folders` + folder columns).
 
 ---
 
@@ -48,12 +48,17 @@ CREATE TABLE saved_items (
     raw_content TEXT        NULL,
     classified_by TEXT      NULL,
 
+    folder_id         UUID  NULL REFERENCES folders(id) ON DELETE SET NULL,
+    folder_by         TEXT  NULL,
+    folder_suggestion TEXT  NULL,
+
     embedding   VECTOR(768) NULL,
 
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_saved_items_user_id ON saved_items(user_id);
+CREATE INDEX idx_saved_items_folder_id ON saved_items(folder_id);
 CREATE INDEX idx_saved_items_embedding_hnsw ON saved_items
     USING hnsw (embedding vector_cosine_ops);
 ```
@@ -108,18 +113,63 @@ the app show "processing" only for items that are really queued, and tell
 | `summary`, `category` | `NULL` | Pure Gemini output, in English. `category` is always one of the fixed list in `classifier.py`. Editable by the user. |
 | `raw_content` | `NULL` | The raw extracted text (max 4000 chars), **kept on purpose** even after `summary` exists: if the prompt or model changes, items can be re-classified from it **without re-scraping** (`backfill_enrichment.py --reclassify`) — and scraping is fragile (pages change, get rate-limited, get deleted). Cheap insurance. |
 | `classified_by` | `NULL` | Who wrote the current title/summary/category: a model id like `gemini:gemini-3.6-flash` or `groq:openai/gpt-oss-120b`, or `user` after an edit in the app. `NULL` = unknown (items from before this column) or never classified. Items not written by the primary classifier model and not by `user` are re-classified by the primary later (`enrichment.upgrade_fallback_items`), so a fallback model's weaker summary is temporary and user edits are never overwritten. |
+| `folder_id` | `NULL`, FK `ON DELETE SET NULL` | The user's folder for this item. `NULL` = Unfiled, which is also what saving without choosing a folder leaves. Deleting a folder un-files its items instead of deleting them: a folder is just a grouping, the links are the data. |
+| `folder_by` | `NULL` | Who decides the folder: `user` (picked in the app, never changed by the AI), `ai` (the user tapped "Let AI pick"), or `NULL` (nobody asked for a folder). `ai` with `folder_id` still `NULL` means "the AI hasn't placed it yet": the user can ask before enrichment has finished, and enrichment (or a later re-classification) places it then. Once placed, the AI never moves it again. See "Folders: who decides" below. |
+| `folder_suggestion` | `NULL` | The folder name the classifier proposed, written in the same Gemini call as title/summary/category (no extra quota). Either the name of one of the user's folders or a new short name when none fits. Stored as text, not as a folder id: it only becomes a real folder when the user taps "Let AI pick", so nothing is created behind the user's back, and a folder the user creates later under the same name still matches. |
 | `embedding` | `VECTOR(768) NULL` | See below. |
+| index on `folder_id` | added | Browsing by folder and counting items per folder. |
 | `created_at` | `NOT NULL DEFAULT now()` | Display order, and the time-range filter in hybrid search. |
 | index on `user_id` | added | The most frequent query is "all items of user X". Postgres does **not** index foreign keys automatically. |
 | HNSW index on `embedding` | `vector_cosine_ops` | Approximate nearest-neighbour search. The operator class must match the query operator (`<=>`); see "Gotchas" in `CLAUDE.md`. |
 
 ---
 
+## Table `folders`
+
+```sql
+CREATE TABLE folders (
+    id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id    UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name       TEXT        NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX uq_folders_user_name ON folders (user_id, lower(name));
+```
+
+Folders are the user's own grouping of their items, next to `category` (the
+AI's fixed taxonomy, kept for search filters). The user creates them, or the
+AI proposes one when the user asks it to pick.
+
+| Column | Decision | Reason |
+|---|---|---|
+| `user_id` | `NOT NULL` + FK `ON DELETE CASCADE` | Same ownership model as `saved_items`. Another user's folder is a 404, like another user's item. |
+| `name` | `TEXT`, trimmed, whitespace collapsed, 1–40 chars (enforced in `folders.py`) | Short enough to fit a chip. Kept in the user's own spelling and case. |
+| unique on `(user_id, lower(name))` | case-insensitive | "Recipes" and "recipes" are the same folder to a person. It also lets the AI's suggestion be matched to an existing folder by name, and makes two simultaneous creations of the same name end in one folder instead of two. |
+| no `item_count` column | computed with a `COUNT` join | Derivable data isn't stored (same rule as `updated_at` below). |
+| max 50 folders per user | enforced in `folders.py` | The folder names go into every classification prompt; an unbounded list would grow every prompt. |
+
+### Folders: who decides
+
+- **The user picks a folder** → `folder_id` = it, `folder_by = 'user'`. The AI never touches it.
+- **The user taps "Let AI pick"** → `folder_by = 'ai'`. If enrichment has
+  finished, `folder_suggestion` is applied right away: matched to an existing
+  folder by name (case-insensitive), or created as a new folder. If
+  enrichment hasn't finished, it's applied when it does. Both paths lock the
+  item row (`SELECT … FOR UPDATE`) before deciding, so a tap that lands at
+  the same moment enrichment finishes can't be lost.
+- **Nobody picks** → both stay `NULL`: the item is Unfiled.
+- **Folder deleted** → its items get `folder_id = NULL` and `folder_by = NULL`
+  (Unfiled), so the AI doesn't re-file them into a re-created folder.
+
+---
+
 ## Relationships
 
 ```
-users (1) ──────< (many) saved_items
-        id              user_id
+users (1) ──────< (many) saved_items >────── (0..1) folders
+        id              user_id   folder_id          id
+users (1) ──────< (many) folders
 ```
 
 A plain one-to-many relationship via the FK on the "many" side. Fetch is

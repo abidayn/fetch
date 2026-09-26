@@ -51,7 +51,7 @@ These were planned during deployment but never confirmed:
       wording. Needs its own per-model quota.
 - [ ] **Recalibrate search thresholds** (`MIN_SCORE`, `MAX_GAP_FROM_TOP`) now
       that summaries are English and there's real usage data.
-- [ ] **More backend tests.** Only the fallback layer is tested (`tests/test_llm.py`); next: `extraction.py`
+- [ ] **More backend tests.** Only the fallback layer and the folder logic are tested (`tests/test_llm.py`, `tests/test_folders.py`); the folder endpoints and row-locking were checked end to end by hand, not by a test (needs a test database). Next: `extraction.py`
       (pure parsing, easy to fixture) and the search thresholds.
 - [ ] Android developer verification / Play Protect recognition, only if the
       app is shared beyond personal use (needs the package rename first).

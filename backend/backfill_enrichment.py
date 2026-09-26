@@ -29,6 +29,8 @@ deliberately NOT retried -- the result would still be empty.
                classified_by = NULL on the items to redo and let the
                automatic upgrade job (enrichment.py) work through them
                within the primary's spare quota.
+               Also refreshes folder_suggestion; folders already chosen are
+               kept (only items waiting for "Let AI pick" get placed).
 
 Usage:
     venv/Scripts/python.exe backfill_enrichment.py
@@ -42,6 +44,7 @@ import uuid
 
 from sqlalchemy import and_, or_, select
 
+import folders
 from classifier import classify
 from database import SessionLocal
 from embeddings import embed_one, embedding_text
@@ -73,6 +76,7 @@ def reprocess(ids: list[uuid.UUID]):
                 continue
             item.raw_content = item.title = item.summary = item.category = None
             item.classified_by = None
+            item.folder_suggestion = None
             item.embedding = None
             db.commit()
         print(f"[{i}/{len(ids)}] {item_id}")
@@ -90,13 +94,16 @@ def reclassify():
         print(f"{len(items)} items to reclassify")
         failed = 0
         for i, item in enumerate(items, 1):
-            result = classify(item.url, item.platform or "generic", item.raw_content)
+            result = classify(
+                item.url, item.platform or "generic", item.raw_content,
+                folders.user_folder_names(db, item.user_id),
+            )
             if result is None:
                 # Old values stay (still better than nothing); rerun later.
                 failed += 1
                 print(f"[{i}/{len(items)}] {item.id} classification failed, kept as is")
                 continue
-            apply_classification(item, result)
+            apply_classification(db, item, result)
             vector = embed_one(embedding_text(item.title, item.summary))
             if vector is not None:
                 item.embedding = vector

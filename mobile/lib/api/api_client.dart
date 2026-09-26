@@ -182,11 +182,11 @@ class ApiClient {
   /// [category] / [createdAfter] = the structured part of hybrid search:
   /// filtered in the same SQL as the vector search (backend/routers/search.py).
   Future<List<dynamic>> search(String query,
-      {int limit = 10, String? category, DateTime? createdAfter}) async {
+      {int limit = 10, String? category, String? folderId, DateTime? createdAfter}) async {
     final res = await _send(() async => http.post(
       Uri.parse('$_baseUrl/search'),
       headers: await _headers(),
-      body: jsonEncode({'query': query, 'limit': limit, ..._filters(category, createdAfter)}),
+      body: jsonEncode({'query': query, 'limit': limit, ..._filters(category, folderId, createdAfter)}),
     ));
     return _handle(res) as List<dynamic>;
   }
@@ -194,19 +194,71 @@ class ApiClient {
   /// Full RAG: the backend finds relevant items, then Gemini writes an answer.
   /// `answer` can be null (Gemini failed / quota used up) -- `sources` is still there.
   Future<Map<String, dynamic>> searchAnswer(String query,
-      {String? category, DateTime? createdAfter}) async {
+      {String? category, String? folderId, DateTime? createdAfter}) async {
     final res = await _send(() async => http.post(
       Uri.parse('$_baseUrl/search/answer'),
       headers: await _headers(),
-      body: jsonEncode({'query': query, ..._filters(category, createdAfter)}),
+      body: jsonEncode({'query': query, ..._filters(category, folderId, createdAfter)}),
     ));
     return _handle(res) as Map<String, dynamic>;
   }
 
-  Map<String, dynamic> _filters(String? category, DateTime? createdAfter) => {
+  Map<String, dynamic> _filters(String? category, String? folderId, DateTime? createdAfter) => {
         'category': ?category,
+        'folder_id': ?folderId,
         if (createdAfter != null) 'created_after': createdAfter.toUtc().toIso8601String(),
       };
+
+  /// The user's folders with item counts, including empty ones.
+  Future<List<dynamic>> listFolders() async {
+    final headers = await _headers();
+    final res = await _send(() => http.get(Uri.parse('$_baseUrl/folders'), headers: headers));
+    return _handle(res) as List<dynamic>;
+  }
+
+  /// Not retried, like POST /items: if the first request created the folder
+  /// but its reply was lost, a retry gets "you already have a folder with
+  /// that name" -- confusing.
+  Future<Map<String, dynamic>> createFolder(String name) async {
+    final res = await _send(retry: false, () async => http.post(
+      Uri.parse('$_baseUrl/folders'),
+      headers: await _headers(),
+      body: jsonEncode({'name': name}),
+    ));
+    return _handle(res) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> renameFolder(String id, String name) async {
+    final headers = await _headers();
+    final res = await _send(() => http.patch(
+          Uri.parse('$_baseUrl/folders/$id'),
+          headers: headers,
+          body: jsonEncode({'name': name}),
+        ));
+    return _handle(res) as Map<String, dynamic>;
+  }
+
+  /// The folder's items aren't deleted, they become Unfiled. A 404 on the
+  /// automatic retry (already deleted) counts as success, like deleteItem.
+  Future<void> deleteFolder(String id) async {
+    final headers = await _headers();
+    final res = await _send(() => http.delete(Uri.parse('$_baseUrl/folders/$id'), headers: headers));
+    if (res.statusCode == 404) return;
+    _handle(res);
+  }
+
+  /// File an item: [ai] = "Let AI pick"; otherwise [folderId], or null to
+  /// un-file. Works while the item is still processing (unlike updateItem),
+  /// and is safe to retry: repeating it gives the same result.
+  Future<Map<String, dynamic>> setItemFolder(String itemId, {String? folderId, bool ai = false}) async {
+    final headers = await _headers();
+    final res = await _send(() => http.put(
+          Uri.parse('$_baseUrl/items/$itemId/folder'),
+          headers: headers,
+          body: jsonEncode(ai ? {'ai': true} : {'folder_id': folderId}),
+        ));
+    return _handle(res) as Map<String, dynamic>;
+  }
 
   Future<Map<String, dynamic>> getItem(String id) async {
     final headers = await _headers();
