@@ -3,7 +3,7 @@
     <!-- LaunchTheme extends Theme.SplashScreen (from androidx
          core-splashscreen), not Theme.Light.NoTitleBar directly. This fixes
          the splash screen freezing permanently when the app is cold-started
-         from the share sheet (ACTION_SEND) -- see "Gotchas" in CLAUDE.md.
+         from the share sheet (ACTION_SEND); see "Gotchas" in CLAUDE.md.
          Diagnosis: Flutter's built-in splash auto-dismiss (implicit
          first-frame detection) doesn't reliably fire when the Activity is
          created via Android's chooser trampoline instead of a launcher tap.
