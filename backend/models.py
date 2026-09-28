@@ -84,6 +84,8 @@ class SavedItem(Base):
     # Every column below is an enrichment result -- allowed to be empty until
     # scraping / Gemini / embedding finish (or fail).
     platform: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Channel / account / site name from extraction (item detail screen).
+    author: Mapped[str | None] = mapped_column(Text, nullable=True)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     category: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -95,8 +97,9 @@ class SavedItem(Base):
     embedding: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)
 
     # Folders (see data-model.md, "Folders: who decides"). NULL folder_id =
-    # Unfiled. folder_by: "user" | "ai" | NULL. "ai" with folder_id still NULL
-    # = the user asked the AI to pick, and it hasn't placed the item yet.
+    # Unsorted. folder_by: "user" (incl. deliberately left in Unsorted) | "ai"
+    # | NULL (nobody decided). "ai" with folder_id still NULL = waiting: for
+    # enrichment, or for the user to accept a proposed new folder.
     folder_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("folders.id", ondelete="SET NULL"),
@@ -104,8 +107,9 @@ class SavedItem(Base):
     )
     folder_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The classifier's proposed folder NAME (existing or new), written in the
-    # same call as title/summary. Only turned into a real folder when the user
-    # taps "Let AI pick" (folders.apply_ai_folder).
+    # same call as title/summary. An existing name is applied when the user
+    # lets Fetch pick (folders.apply_ai_folder); a new one only becomes a
+    # folder when the user accepts it (folders.accept_suggestion).
     folder_suggestion: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(

@@ -1,21 +1,30 @@
 /// Mirror of the backend's `FolderPublic` schema (backend/schemas.py): one of
-/// the user's own folders. Folders are the user's grouping of items, next to
-/// the AI's fixed `category` (which stays a search filter).
+/// the user's own folders.
 class Folder {
   final String id;
   final String name;
 
-  /// From GET /folders. The home screen counts from its loaded items instead
-  /// (always in sync with the list it filters); this is for places that don't
-  /// have every item loaded, like the save sheet.
+  /// From GET /folders. Screens that have every item loaded (home) count
+  /// from those instead, so the numbers always match the list on screen.
   final int itemCount;
 
-  Folder({required this.id, required this.name, required this.itemCount});
+  /// Newest save in the folder (null = empty) and when the folder was made:
+  /// together they give "most recently used" (see [lastUsed]).
+  final DateTime? lastSavedAt;
+  final DateTime? createdAt;
+
+  Folder({required this.id, required this.name, required this.itemCount, this.lastSavedAt, this.createdAt});
+
+  /// "Recently used" = the newest save in it, or when it was made.
+  DateTime get lastUsed =>
+      lastSavedAt ?? createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
 
   factory Folder.fromJson(Map<String, dynamic> json) => Folder(
         id: json['id'] as String,
         name: json['name'] as String,
         itemCount: json['item_count'] as int? ?? 0,
+        lastSavedAt: json['last_saved_at'] == null ? null : DateTime.parse(json['last_saved_at'] as String),
+        createdAt: json['created_at'] == null ? null : DateTime.parse(json['created_at'] as String),
       );
 }
 
@@ -41,3 +50,12 @@ List<Folder> filterFolders(List<Folder> folders, String query) {
   }
   return [...starts, ...contains];
 }
+
+/// Most recently used first: the folders you actually file into stay one
+/// tap away (home chips, the folder picker) even with dozens of folders.
+List<Folder> byRecent(List<Folder> folders) =>
+    [...folders]..sort((a, b) => b.lastUsed.compareTo(a.lastUsed));
+
+/// Alphabetical, for the All folders screen, where you look a name up.
+List<Folder> byName(List<Folder> folders) =>
+    [...folders]..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));

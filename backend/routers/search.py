@@ -97,10 +97,11 @@ def search(
     return retrieve(db, current_user, payload.query, payload.limit, payload)
 
 
-# The LLM context is deliberately small: the 5 most relevant items. More =
+# The LLM context is deliberately small: the 3 most relevant items (was 5;
+# 3 answers faster, and the app says "reads your top 3"). More =
 # more tokens (slower, costlier), and marginally relevant items tempt the
 # model to "force" connections that aren't there.
-ANSWER_CONTEXT_ITEMS = 5
+ANSWER_CONTEXT_ITEMS = 3
 NO_MATCH_ANSWER = "None of your saved items match this question."
 
 

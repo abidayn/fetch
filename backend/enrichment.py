@@ -17,9 +17,10 @@ upgrading a weaker fallback model's summary, and retrying items whose
 classification failed entirely (classified_by stays NULL).
 
 Folders: the same classification call also proposes a folder
-(folder_suggestion). It's applied only if the user asked the AI to pick
-(folder_by = "ai"), whenever a classification lands -- here, in the upgrade
-job, or in suggest_folder(). See folders.py.
+(folder_suggestion). It's applied only if the user let Fetch pick
+(folder_by = "ai") and it names an existing folder, whenever a
+classification lands -- here, in the upgrade job, or in suggest_folder().
+A new name waits for the user. See folders.py.
 """
 
 import logging
@@ -113,6 +114,7 @@ def enrich_item(item_id: uuid.UUID) -> None:
         if not lock_item(db, item):
             return  # deleted by the user while it was being processed
         item.platform = extracted.platform
+        item.author = extracted.author
         item.raw_content = content  # "" when empty -> marks it "processed"
         if result is not None:
             apply_classification(db, item, result)
@@ -200,9 +202,10 @@ def upgrade_fallback_items(limit: int = UPGRADE_BATCH) -> None:
 
     Candidates: items with content whose classified_by is NULL (never
     classified, or from before the column existed) or another model's id --
-    plus items still waiting for an AI folder (folder_by "ai", not placed;
-    e.g. the suggestion call failed). "user" text is never touched: such
-    items only get their folder. Stops at the first sign the primary is
+    plus items the user let Fetch pick that have NO suggestion yet (e.g. the
+    suggestion call failed). Not items whose suggestion is waiting for the
+    user to accept: asking again would only burn quota. "user" text is never
+    touched: such items only get their folder. Stops at the first sign the primary is
     unavailable (e.g. its daily quota), so it never falls back to the very
     models it's meant to replace.
     """
@@ -218,7 +221,8 @@ def upgrade_fallback_items(limit: int = UPGRADE_BATCH) -> None:
                 SavedItem.raw_content != "",
                 or_(SavedItem.classified_by.is_(None),
                     SavedItem.classified_by.not_in([str(PRIMARY), "user"]),
-                    and_(SavedItem.folder_by == "ai", SavedItem.folder_id.is_(None))),
+                    and_(SavedItem.folder_by == "ai", SavedItem.folder_id.is_(None),
+                         SavedItem.folder_suggestion.is_(None))),
             )
             .order_by(SavedItem.created_at.desc())
         )
@@ -246,9 +250,9 @@ def upgrade_fallback_items(limit: int = UPGRADE_BATCH) -> None:
             apply_classification(db, item, result, keep_text=keep_text)
             if not keep_text and vector is not None:
                 item.embedding = vector
-            if item.folder_by == "ai" and item.folder_id is None:
-                # Couldn't be placed (e.g. the user is at the folder limit):
-                # don't pick it again on every run.
+            if item.folder_by == "ai" and item.folder_id is None and item.folder_suggestion is None:
+                # The model answered with a blank folder name: don't ask again
+                # on every run.
                 _upgrade_skip.add(item.id)
             db.commit()  # per item: a later failure doesn't lose earlier progress
             log.info("upgrade: item %s re-classified (%s -> %s)", item.id, before, result.model)

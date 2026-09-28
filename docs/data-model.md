@@ -6,7 +6,8 @@ other way round. The DDL is written as SQL for precision; the real
 implementation goes through SQLAlchemy but must be equivalent.
 
 Migrations so far: `9a2d76c47977` (both tables) → `66de89f6cd67` (HNSW index) →
-`b3f1c2d4e5a6` (`classified_by`) → `c4d2e8f1a9b7` (`folders` + folder columns).
+`b3f1c2d4e5a6` (`classified_by`) → `c4d2e8f1a9b7` (`folders` + folder columns) →
+`d7a3e9c15b20` (`author`, older Unfiled items marked "left in Unsorted").
 
 ---
 
@@ -41,6 +42,7 @@ CREATE TABLE saved_items (
 
     url         TEXT        NOT NULL,
     platform    TEXT        NULL,
+    author      TEXT        NULL,
 
     title       TEXT        NULL,
     summary     TEXT        NULL,
@@ -109,13 +111,14 @@ the app show "processing" only for items that are really queued, and tell
 | `ON DELETE CASCADE` | deleting a user deletes their items | Alternatives are `RESTRICT` or `SET NULL` (orphaned items). For a personal app, deleting an account means deleting its data. |
 | `url` | `NOT NULL` | The only data guaranteed at save time. |
 | `platform` | `NULL` | Set by extraction: `youtube` / `tiktok` / `instagram` / `generic`. |
+| `author` | `NULL` | Set by extraction: the channel, account or site name (`@cookwithmina`, `Plant Care Notes`). Shown on the item detail screen. It was always extracted, but used to survive only as an `Author: …` line inside `raw_content`; migration `d7a3e9c15b20` copied it out of there for older items. |
 | `title` | `NULL` | Set by Gemini (or the extracted title if Gemini fails). Editable by the user. |
 | `summary`, `category` | `NULL` | Pure Gemini output, in English. `category` is always one of the fixed list in `classifier.py`. Editable by the user. |
 | `raw_content` | `NULL` | The raw extracted text (max 4000 chars), **kept on purpose** even after `summary` exists: if the prompt or model changes, items can be re-classified from it **without re-scraping** (`backfill_enrichment.py --reclassify`) — and scraping is fragile (pages change, get rate-limited, get deleted). Cheap insurance. |
 | `classified_by` | `NULL` | Who wrote the current title/summary/category: a model id like `gemini:gemini-3.6-flash` or `groq:openai/gpt-oss-120b`, or `user` after an edit in the app. `NULL` = unknown (items from before this column) or never classified. Items not written by the primary classifier model and not by `user` are re-classified by the primary later (`enrichment.upgrade_fallback_items`), so a fallback model's weaker summary is temporary and user edits are never overwritten. |
-| `folder_id` | `NULL`, FK `ON DELETE SET NULL` | The user's folder for this item. `NULL` = Unfiled, which is also what saving without choosing a folder leaves. Deleting a folder un-files its items instead of deleting them: a folder is just a grouping, the links are the data. |
-| `folder_by` | `NULL` | Who decides the folder: `user` (picked in the app, never changed by the AI), `ai` (the user tapped "Let AI pick"), or `NULL` (nobody asked for a folder). `ai` with `folder_id` still `NULL` means "the AI hasn't placed it yet": the user can ask before enrichment has finished, and enrichment (or a later re-classification) places it then. Once placed, the AI never moves it again. See "Folders: who decides" below. |
-| `folder_suggestion` | `NULL` | The folder name the classifier proposed, written in the same Gemini call as title/summary/category (no extra quota). Either the name of one of the user's folders or a new short name when none fits. Stored as text, not as a folder id: it only becomes a real folder when the user taps "Let AI pick", so nothing is created behind the user's back, and a folder the user creates later under the same name still matches. |
+| `folder_id` | `NULL`, FK `ON DELETE SET NULL` | The user's folder for this item. `NULL` = Unsorted. Deleting a folder un-files its items instead of deleting them: a folder is just a grouping, the links are the data. |
+| `folder_by` | `NULL` | Who decides the folder: `user` (picked in the app, or deliberately left in Unsorted — then `folder_id` is `NULL`; never changed by the AI), `ai` (the user let Fetch pick), or `NULL` (nobody decided yet). `ai` with `folder_id` still `NULL` means "waiting": for enrichment to finish, or — when the AI proposed a folder that doesn't exist — for the user to accept it. See "Folders: who decides" below. |
+| `folder_suggestion` | `NULL` | The folder name the classifier proposed, written in the same Gemini call as title/summary/category (no extra quota). Either the name of one of the user's folders or a new short name when none fits. Stored as text, not as a folder id: a new name only becomes a real folder when the user accepts it ("Create 'X'"), so nothing is created behind the user's back, and a folder the user creates later under the same name still matches. |
 | `embedding` | `VECTOR(768) NULL` | See below. |
 | index on `folder_id` | added | Browsing by folder and counting items per folder. |
 | `created_at` | `NOT NULL DEFAULT now()` | Display order, and the time-range filter in hybrid search. |
@@ -138,8 +141,8 @@ CREATE UNIQUE INDEX uq_folders_user_name ON folders (user_id, lower(name));
 ```
 
 Folders are the user's own grouping of their items, next to `category` (the
-AI's fixed taxonomy, kept for search filters). The user creates them, or the
-AI proposes one when the user asks it to pick.
+AI's fixed taxonomy, no longer shown in the app but still written by the
+classifier). The user creates them, or accepts one the AI proposed.
 
 | Column | Decision | Reason |
 |---|---|---|
@@ -152,15 +155,22 @@ AI proposes one when the user asks it to pick.
 ### Folders: who decides
 
 - **The user picks a folder** → `folder_id` = it, `folder_by = 'user'`. The AI never touches it.
-- **The user taps "Let AI pick"** → `folder_by = 'ai'`. If enrichment has
-  finished, `folder_suggestion` is applied right away: matched to an existing
-  folder by name (case-insensitive), or created as a new folder. If
-  enrichment hasn't finished, it's applied when it does. Both paths lock the
-  item row (`SELECT … FOR UPDATE`) before deciding, so a tap that lands at
-  the same moment enrichment finishes can't be lost.
-- **Nobody picks** → both stay `NULL`: the item is Unfiled.
-- **Folder deleted** → its items get `folder_id = NULL` and `folder_by = NULL`
-  (Unfiled), so the AI doesn't re-file them into a re-created folder.
+- **The user leaves it in Unsorted** ("Leave it in Unsorted", or un-filing) →
+  `folder_id = NULL`, `folder_by = 'user'`. A decision, so the item doesn't
+  show up in the app's "Needs you" list.
+- **The user lets Fetch pick** (tapping "Let Fetch pick", or closing the save
+  sheet without choosing) → `folder_by = 'ai'`. `folder_suggestion` is applied
+  when it exists — right away if enrichment has finished, otherwise when it
+  does — but **only if it names an existing folder** (case-insensitive). A new
+  name waits on the item until the user accepts it (`PUT /items/{id}/folder`
+  with `accept_suggestion`, which creates the folder) or picks another. Both
+  paths lock the item row (`SELECT … FOR UPDATE`) before deciding, so a tap
+  that lands at the same moment enrichment finishes can't be lost.
+- **Nobody decided** → both `NULL`: Unsorted, and listed in "Needs you".
+  Migration `d7a3e9c15b20` marked every item that was Unsorted before this
+  rule as "left in Unsorted", so the old library doesn't flood that list.
+- **Folder deleted** → its items get `folder_id = NULL` and `folder_by = NULL`,
+  so the AI doesn't re-file them into a re-created folder.
 
 ---
 

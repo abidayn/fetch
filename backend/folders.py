@@ -3,15 +3,17 @@ Folder logic shared by routers/folders.py, routers/items.py, enrichment.py and
 backfill_enrichment.py.
 
 Who decides an item's folder (data-model.md, "Folders: who decides"):
-- folder_by = "user": the user picked it. The AI never touches it.
-- folder_by = "ai":   the user tapped "Let AI pick". The classifier's
-                      folder_suggestion is applied by apply_ai_folder -- right
-                      away if the item is already classified, otherwise by
-                      enrichment when it finishes.
-- folder_by = NULL:   nobody asked; the item is Unfiled.
+- folder_by = "user": the user picked it, or left it in Unsorted on purpose
+                      (folder_id NULL). The AI never touches it.
+- folder_by = "ai":   the user let Fetch pick. apply_ai_folder files it into
+                      the suggested folder if that folder EXISTS -- right away
+                      if the item is already classified, otherwise when
+                      enrichment finishes. A new name waits on the item until
+                      the user accepts it (accept_suggestion).
+- folder_by = NULL:   nobody decided yet; Unsorted, and "Needs you" in the app.
 
-The AI's suggestion is only ever turned into a real folder here, when the user
-asked for it. Classification itself creates nothing.
+A folder is only ever created because the user asked: by name, or by
+accepting the AI's proposal. Classification itself creates nothing.
 """
 
 import uuid
@@ -80,7 +82,10 @@ def suggestion_from_model(raw: str) -> str | None:
 
 
 def apply_ai_folder(db: Session, item) -> None:
-    """Place an item the user asked the AI to file, using its folder_suggestion.
+    """File an item the user let Fetch pick into its suggested folder -- only
+    if that folder already exists. A new name is left waiting on the item for
+    the user to accept (accept_suggestion) or overrule: the user's folder
+    list only ever holds folders they approved.
 
     Call with the item row locked (SELECT ... FOR UPDATE), so this and a
     concurrent PUT /items/{id}/folder can't interleave. Does nothing unless
@@ -90,7 +95,22 @@ def apply_ai_folder(db: Session, item) -> None:
     """
     if item.folder_by != "ai" or item.folder_id is not None or not item.folder_suggestion:
         return
+    folder = find_by_name(db, item.user_id, item.folder_suggestion)
+    if folder is not None:
+        item.folder = folder
+        item.folder_id = folder.id
+
+
+def accept_suggestion(db: Session, item) -> Folder | None:
+    """The user accepted the AI's proposed folder: create it (or find it, if
+    the user made one with that name meanwhile) and file the item there as
+    the AI's pick. None when there's nothing to accept or the user is at
+    MAX_FOLDERS. Call with the item row locked, like apply_ai_folder."""
+    if not item.folder_suggestion:
+        return None
     folder = get_or_create(db, item.user_id, item.folder_suggestion)
     if folder is not None:
         item.folder = folder
         item.folder_id = folder.id
+        item.folder_by = "ai"
+    return folder

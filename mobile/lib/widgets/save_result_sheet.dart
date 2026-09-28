@@ -3,72 +3,98 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../api/api_client.dart';
+import '../logic/library.dart';
 import '../models/folder.dart';
 import '../models/item.dart';
+import '../util/app_channel.dart';
 import 'folder_name_dialog.dart';
 import 'folder_picker.dart';
+import 'platform_badge.dart';
 
-/// Feedback after a link is saved: "Saved — AI is organizing this…", which
-/// turns into the AI result once enrichment finishes on the backend -- plus
-/// the folder picker (FolderPicker). Choosing a folder is optional; closing
-/// the sheet without one leaves the item Unfiled.
-Future<void> showSaveResultSheet(BuildContext context, ApiClient apiClient, Item item) {
-  return _showItemSheet(context, apiClient, item, justSaved: true);
-}
-
-/// "Move to folder" for an item saved earlier: the same picker, without the
-/// "Saved" feedback. [onChanged] gets every confirmed change, so the list
-/// behind the sheet stays in sync however the sheet is closed.
-Future<void> showFolderSheet(BuildContext context, ApiClient apiClient, Item item,
-    {ValueChanged<Item>? onChanged}) {
-  return _showItemSheet(context, apiClient, item, justSaved: false, onChanged: onChanged);
-}
-
-Future<void> _showItemSheet(BuildContext context, ApiClient apiClient, Item item,
-    {required bool justSaved, ValueChanged<Item>? onChanged}) {
+/// The save sheet, shown right after a link is saved (the 201 has already
+/// come back, so closing it never loses the link). Stages:
+///
+///   pick        "Where should it go?" -- Let Fetch pick, a folder, or +.
+///               Closing the sheet here counts as "Let Fetch pick".
+///   organizing  Saved → Reading the link → Writing a summary → Picking a
+///               folder (or "Going to X"). The steps are timed: the backend
+///               only reports processed yes/no. You can leave any time.
+///   done        "All set": the result, where it went and who picked it, Change.
+///   needsFolder Fetch couldn't read the link (or couldn't pick): pick one,
+///               or leave it in Unsorted.
+///   suggest     None of the folders fit: create Fetch's proposed folder,
+///               pick another, or leave it in Unsorted.
+///   repick      After "Change" / "Pick a folder".
+///
+/// [fromShare]: opened by Android's share menu, so the footer offers "Back
+/// to TikTok" (and "Open in Fetch"); a link pasted inside Fetch just gets Done.
+/// [onChanged] receives every confirmed version of the item; [onToast]
+/// shows a message after the sheet has gone (a snackbar under a sheet would
+/// be hidden).
+Future<void> showSaveResultSheet(
+  BuildContext context,
+  ApiClient apiClient,
+  Item item, {
+  bool fromShare = false,
+  ValueChanged<Item>? onChanged,
+  ValueChanged<String>? onToast,
+}) {
   return showModalBottomSheet<void>(
     context: context,
     showDragHandle: true,
-    // The picker can be taller than the default half-screen limit.
     isScrollControlled: true,
     useSafeArea: true,
-    builder: (_) => _ItemSheet(apiClient: apiClient, initial: item, justSaved: justSaved, onChanged: onChanged),
+    builder: (_) => _SaveSheet(
+      apiClient: apiClient,
+      initial: item,
+      fromShare: fromShare,
+      onChanged: onChanged,
+      onToast: onToast,
+    ),
   );
 }
 
-class _ItemSheet extends StatefulWidget {
+enum _Stage { pick, organizing, done, needsFolder, suggest, repick }
+
+class _SaveSheet extends StatefulWidget {
   final ApiClient apiClient;
   final Item initial;
-  final bool justSaved;
+  final bool fromShare;
   final ValueChanged<Item>? onChanged;
-  const _ItemSheet({required this.apiClient, required this.initial, required this.justSaved, this.onChanged});
+  final ValueChanged<String>? onToast;
+  const _SaveSheet({
+    required this.apiClient,
+    required this.initial,
+    required this.fromShare,
+    this.onChanged,
+    this.onToast,
+  });
 
   @override
-  State<_ItemSheet> createState() => _ItemSheetState();
+  State<_SaveSheet> createState() => _SaveSheetState();
 }
 
-class _ItemSheetState extends State<_ItemSheet> {
-  // Enrichment normally takes 4-9 seconds, but can take ~20 seconds when
-  // Gemini is retrying (429/503). After 60 seconds the sheet stops waiting --
-  // the item still updates itself in the home list. The same limit applies
-  // to waiting for "Let AI pick" to place the item.
+class _SaveSheetState extends State<_SaveSheet> {
+  // Enrichment normally takes 4-9 s, up to ~20 s when Gemini retries. After
+  // 60 s the sheet stops waiting; the item still updates itself in the list.
   static const _pollInterval = Duration(seconds: 3);
   static const _maxWait = Duration(seconds: 60);
 
   late Item _item = widget.initial;
-  Timer? _timer;
-  DateTime? _deadline;
-  bool _gaveUp = false; // stopped waiting for enrichment
-  bool _aiTimedOut = false; // stopped waiting for the AI to place the item
-
   List<Folder>? _folders;
   String? _foldersError;
-  String? _choiceError;
+  String? _error;
 
-  // Every folder choice bumps this. A reply (or poll) that belongs to an
-  // older choice is dropped instead of overwriting a newer one.
-  int _version = 0;
-  bool _saving = false;
+  /// null = nothing chosen yet; 'ai'; 'unsorted'; or a folder id.
+  String? _choice;
+  bool _repick = false;
+  DateTime? _chosenAt;
+
+  Timer? _poll;
+  Timer? _tick; // re-renders the timed progress steps
+  DateTime? _deadline;
+  bool _gaveUp = false;
+  int _version = 0; // replies/polls from an older choice are dropped
 
   @override
   void initState() {
@@ -79,19 +105,36 @@ class _ItemSheetState extends State<_ItemSheet> {
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _poll?.cancel();
+    _tick?.cancel();
+    if (_choice == null) {
+      // Closed without choosing = "Let Fetch pick" (the prototype's rule: a
+      // save always ends up filed, or flagged in Needs you -- never silently
+      // lost in Unsorted). Fire and forget: the list picks up the result.
+      widget.apiClient.setItemFolder(_item.id, ai: true).then((json) {
+        widget.onChanged?.call(Item.fromJson(json));
+      }).catchError((_) {});
+      widget.onToast?.call('Saved. Fetch will pick a folder.');
+    }
     super.dispose();
   }
 
-  /// The user tapped "Let AI pick" and the backend is still working on it:
-  /// enrichment hasn't finished, or (for an item saved before folders
-  /// existed) it's asking the AI right now. Not when the AI can't or didn't
-  /// answer -- then there's nothing to wait for.
   bool get _aiWorking =>
       _item.waitingForAi &&
       (!_item.processed || (_item.hasContent && _item.summary != null && _item.folderSuggestion == null));
 
-  bool get _needsPoll => !_item.processed || _aiWorking;
+  bool get _needsPoll => !_item.processed || (_choice == 'ai' && _aiWorking);
+
+  _Stage get _stage {
+    if (_repick) return _Stage.repick;
+    if (_choice == null) return _Stage.pick;
+    if (!_item.processed) return _Stage.organizing;
+    if (_choice != 'ai') return _Stage.done;
+    if (_item.folderId != null) return _Stage.done;
+    if (_item.suggestionWaiting) return _Stage.suggest;
+    if (_item.hasContent && _aiWorking && !_gaveUp) return _Stage.organizing;
+    return _Stage.needsFolder;
+  }
 
   Future<void> _loadFolders() async {
     try {
@@ -107,84 +150,78 @@ class _ItemSheetState extends State<_ItemSheet> {
   }
 
   void _schedulePoll() {
-    if (_timer != null || !_needsPoll) return;
+    if (_poll != null || !_needsPoll) return;
     _deadline ??= DateTime.now().add(_maxWait);
     if (DateTime.now().isAfter(_deadline!)) {
-      setState(() {
-        if (!_item.processed) _gaveUp = true;
-        _aiTimedOut = true;
-      });
+      setState(() => _gaveUp = true);
       return;
     }
-    _timer = Timer(_pollInterval, _poll);
+    _poll = Timer(_pollInterval, _pollOnce);
   }
 
-  Future<void> _poll() async {
-    _timer = null;
+  Future<void> _pollOnce() async {
+    _poll = null;
     final version = _version;
-    final startedWhileSaving = _saving;
     try {
       final fresh = Item.fromJson(await widget.apiClient.getItem(_item.id));
-      if (!mounted) return;
-      // A GET that overlapped a folder choice may return the row as it was
-      // BEFORE that choice -- the choice's own reply is the authority.
-      if (version == _version && !startedWhileSaving && !_saving) {
-        final newlyPlaced = fresh.folderId != null && fresh.folderId != _item.folderId;
-        setState(() => _item = fresh);
-        widget.onChanged?.call(fresh);
-        if (newlyPlaced) _loadFolders(); // the AI may have just created a folder
-      }
+      if (!mounted || version != _version) return;
+      _setItem(fresh);
     } catch (_) {
       // Brief network glitch: try again on the next round.
     }
     if (mounted) _schedulePoll();
   }
 
-  Future<void> _choose({Folder? folder, bool ai = false}) async {
-    final before = _item;
+  void _setItem(Item fresh) {
+    setState(() => _item = fresh);
+    widget.onChanged?.call(fresh);
+  }
+
+  void _startTicking() {
+    _tick?.cancel();
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || _stage != _Stage.organizing) {
+        _tick?.cancel();
+        return;
+      }
+      setState(() {});
+    });
+  }
+
+  /// Sends one folder decision. [choice] is what the sheet shows meanwhile.
+  Future<void> _send(String choice, {Folder? folder, bool ai = false, bool accept = false}) async {
     final version = ++_version;
     setState(() {
-      _saving = true;
-      _choiceError = null;
-      // Shown right away; the backend's reply below replaces it.
-      _item = ai
-          ? _item.withFolder(folderBy: 'ai')
-          : folder == null
-              ? _item.withFolder()
-              : _item.withFolder(folderId: folder.id, folderName: folder.name, folderBy: 'user');
+      _choice = choice;
+      _repick = false;
+      _error = null;
+      _chosenAt ??= DateTime.now();
       if (ai) {
-        // A new wait: give the AI its own full time limit.
         _deadline = null;
-        _aiTimedOut = false;
+        _gaveUp = false;
       }
     });
+    _startTicking();
     try {
-      final fresh = Item.fromJson(await widget.apiClient.setItemFolder(_item.id, folderId: folder?.id, ai: ai));
+      final json = await widget.apiClient.setItemFolder(
+        _item.id,
+        ai: ai,
+        acceptSuggestion: accept,
+        folderId: folder?.id,
+      );
       if (!mounted || version != _version) return;
-      setState(() => _item = fresh);
-      widget.onChanged?.call(fresh);
-      _loadFolders(); // counts changed, and "Let AI pick" may have created a folder
+      _setItem(Item.fromJson(json));
+      _loadFolders(); // counts changed; accepting may have created a folder
+      _schedulePoll();
     } on ApiException catch (e) {
       if (!mounted || version != _version) return;
       // Inline, not a snackbar: a snackbar would appear behind this sheet.
-      setState(() {
-        _item = before;
-        _choiceError = "Couldn't save the folder: ${e.message}";
-      });
-    } finally {
-      if (mounted && version == _version) {
-        setState(() => _saving = false);
-        _schedulePoll();
-      }
+      setState(() => _error = "Couldn't save the folder: ${e.message}");
     }
   }
 
-  void _pickFolder(Folder folder) {
-    // Tapping the selected folder again un-files the item.
-    _choose(folder: folder.id == _item.folderId && _item.folderBy == 'user' ? null : folder);
-  }
+  void _pickFolder(Folder f) => _send(f.id, folder: f);
 
-  /// [initial] = the name typed in "Find a folder" that matched nothing.
   Future<void> _createFolder(String initial) async {
     final name = await showFolderNameDialog(context, initial: initial);
     if (name == null || !mounted) return;
@@ -192,100 +229,249 @@ class _ItemSheetState extends State<_ItemSheet> {
       final folder = Folder.fromJson(await widget.apiClient.createFolder(name));
       if (!mounted) return;
       setState(() => _folders = [...?_folders, folder]);
-      await _choose(folder: folder);
+      await _send(folder.id, folder: folder);
     } on ApiException catch (e) {
-      if (mounted) setState(() => _choiceError = "Couldn't create the folder: ${e.message}");
+      if (mounted) setState(() => _error = "Couldn't create the folder: ${e.message}");
     }
   }
 
-  Widget _savedStatus(ThemeData theme) {
-    if (!_item.processed && !_gaveUp) {
-      return Row(children: [
-        const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-        const SizedBox(width: 12),
-        Expanded(child: Text('AI is organizing this…', style: theme.textTheme.bodyMedium)),
-      ]);
-    }
-    if (!_item.processed) {
-      return Text("Still organizing — it'll update in your list when it's ready.",
+  Future<void> _backToSource() async {
+    Navigator.pop(context);
+    await moveAppToBack();
+  }
+
+  // --- pieces ------------------------------------------------------------------
+
+  Widget _head(ThemeData theme, String title, {bool ok = true}) {
+    return Row(children: [
+      PlatformBadge(platform: _item.platformKey, size: 40),
+      const SizedBox(width: 12),
+      Expanded(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            if (ok) ...[Icon(Icons.check_circle, size: 20, color: theme.colorScheme.primary), const SizedBox(width: 6)],
+            Flexible(child: Text(title, style: theme.textTheme.titleLarge)),
+          ]),
+          Text(_item.url,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+        ]),
+      ),
+    ]);
+  }
+
+  Widget _result(ThemeData theme) {
+    if (!_item.hasContent) {
+      return Text("Only the link could be read, so there's no summary. You can add a title later.",
           style: theme.textTheme.bodyMedium);
     }
-    if (_item.summary != null) {
-      return Card(
-        margin: EdgeInsets.zero,
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(_item.displayTitle, style: theme.textTheme.titleMedium),
-            const SizedBox(height: 6),
-            Text(_item.summary!, style: theme.textTheme.bodyMedium),
-          ]),
-        ),
-      );
-    }
-    if (_item.hasContent) {
-      // The link's content was read, but Gemini failed (quota/timeout).
-      // Retryable on the backend (backfill_enrichment.py) -- unlike an unreadable link.
-      return Text(
-        "Saved, but the AI summary didn't come through this time. "
-        'You can add a title and summary yourself via Edit.',
-        style: theme.textTheme.bodyMedium,
-      );
-    }
-    // Processed, but the content couldn't be read (private/deleted post, etc.).
-    return Text("Couldn't read much from this link, so it's saved as-is.", style: theme.textTheme.bodyMedium);
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(_item.displayTitle, maxLines: 2, overflow: TextOverflow.ellipsis, style: theme.textTheme.titleSmall),
+          if (_item.summary != null) ...[
+            const SizedBox(height: 4),
+            Text(_item.summary!, maxLines: 2, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall),
+          ] else ...[
+            const SizedBox(height: 4),
+            Text("The AI summary didn't come through this time.", style: theme.textTheme.bodySmall),
+          ],
+        ]),
+      ),
+    );
   }
+
+  Widget _steps(ThemeData theme) {
+    final elapsed = DateTime.now().difference(_chosenAt ?? DateTime.now()).inSeconds;
+    final manual = _choice != 'ai';
+    final folderName = _item.folderName ?? (_choice == 'unsorted' ? 'Unsorted' : null);
+    // Timed: "Reading" for the first ~3 s, then "Writing". The real finish
+    // comes from polling (the stage moves on when the item is processed).
+    final reading = elapsed < 3;
+    Widget step(String label, {required bool done, bool now = false}) => Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(children: [
+            SizedBox(
+              width: 20,
+              height: 20,
+              child: done
+                  ? Icon(Icons.check_circle, size: 20, color: theme.colorScheme.primary)
+                  : now
+                      ? const CircularProgressIndicator(strokeWidth: 2)
+                      : Icon(Icons.radio_button_unchecked, size: 20, color: theme.colorScheme.outline),
+            ),
+            const SizedBox(width: 10),
+            Text(label, style: now ? theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600) : null),
+          ]),
+        );
+    final processed = _item.processed;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      step('Saved', done: true),
+      step('Reading the link', done: processed || !reading, now: !processed && reading),
+      step('Writing a title and summary', done: processed, now: !processed && !reading),
+      manual
+          ? step('Going to ${folderName ?? 'your folder'}', done: true)
+          : step('Picking a folder', done: false, now: processed),
+    ]);
+  }
+
+  Widget _filedRow(ThemeData theme) {
+    final name = _item.folderName ?? 'Unsorted';
+    final by = _item.folderId == null
+        ? 'Not in a folder'
+        : _item.folderBy == 'ai'
+            ? 'Picked by Fetch'
+            : 'Picked by you';
+    return Card(
+      margin: EdgeInsets.zero,
+      child: ListTile(
+        leading: const Icon(Icons.folder_outlined),
+        title: Text(name),
+        subtitle: Text(by, style: _item.folderBy == 'ai' ? const TextStyle(color: kAiAccent) : null),
+        trailing: TextButton(onPressed: () => setState(() => _repick = true), child: const Text('Change')),
+      ),
+    );
+  }
+
+  Widget _footer() {
+    if (!widget.fromShare) {
+      return FilledButton(onPressed: () => Navigator.pop(context), child: const Text('Done'));
+    }
+    final source = sourceAppName(_item.url);
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      FilledButton(onPressed: _backToSource, child: Text(source == null ? 'Go back' : 'Back to $source')),
+      TextButton(onPressed: () => Navigator.pop(context), child: const Text('Open in Fetch')),
+    ]);
+  }
+
+  Widget _picker({bool ai = false, String? selected}) => FolderPicker(
+        folders: _folders,
+        foldersError: _foldersError,
+        onRetryFolders: _loadFolders,
+        selectedId: selected,
+        showAi: ai,
+        onPickAi: () => _send('ai', ai: true),
+        onPickFolder: _pickFolder,
+        onCreate: _createFolder,
+      );
+
+  Widget _hint(ThemeData theme, String text) =>
+      Text(text, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant));
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final folderName = _item.folderName;
-    final String heading;
-    final String subheading;
-    if (widget.justSaved) {
-      heading = folderName != null ? 'Saved to $folderName' : 'Saved';
-      subheading = _item.url;
-    } else {
-      heading = 'Move to folder';
-      subheading = _item.displayTitle;
+    final gap = const SizedBox(height: 16);
+    final List<Widget> children;
+    switch (_stage) {
+      case _Stage.pick:
+        children = [
+          _head(theme, 'Saved to Fetch'),
+          gap,
+          Text('Where should it go?', style: theme.textTheme.titleSmall),
+          const SizedBox(height: 10),
+          _picker(ai: true),
+          const SizedBox(height: 10),
+          _hint(theme, 'Close this and Fetch will pick.'),
+        ];
+      case _Stage.organizing:
+        children = [
+          _head(theme, 'Saved to Fetch'),
+          gap,
+          _steps(theme),
+          const SizedBox(height: 8),
+          _hint(theme, 'You can leave now. Fetch keeps working.'),
+          gap,
+          _footer(),
+        ];
+      case _Stage.done:
+        children = [
+          _head(theme, 'All set'),
+          gap,
+          _result(theme),
+          const SizedBox(height: 12),
+          _filedRow(theme),
+          gap,
+          _footer(),
+        ];
+      case _Stage.needsFolder:
+        final source = sourceAppName(_item.url) ?? 'The page';
+        children = [
+          _head(theme, _item.hasContent ? "Saved, but Fetch couldn't pick" : "Saved, but Fetch couldn't read it",
+              ok: false),
+          gap,
+          Text(
+            _item.hasContent
+                ? "Fetch couldn't choose a folder this time. Pick one for it."
+                : "$source only shared the link, so Fetch can't tell what it's about. Pick a folder for it.",
+            style: theme.textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 12),
+          _picker(),
+          const SizedBox(height: 8),
+          TextButton(onPressed: () => _send('unsorted'), child: const Text('Leave it in Unsorted')),
+        ];
+      case _Stage.suggest:
+        children = [
+          _head(theme, 'Saved to Fetch'),
+          gap,
+          _result(theme),
+          const SizedBox(height: 12),
+          Card(
+            margin: EdgeInsets.zero,
+            color: kAiContainer,
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                Text('None of your folders fit this.', style: theme.textTheme.bodySmall?.copyWith(color: kOnAiContainer)),
+                const SizedBox(height: 4),
+                Text('Create a "${_item.folderSuggestion}" folder for it?',
+                    style: theme.textTheme.titleSmall?.copyWith(color: kOnAiContainer)),
+                const SizedBox(height: 10),
+                Row(children: [
+                  Expanded(
+                    child: FilledButton(
+                      style: FilledButton.styleFrom(backgroundColor: kAiAccent),
+                      onPressed: () => _send('ai', accept: true),
+                      child: const Text('Create folder'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton(
+                        onPressed: () => setState(() => _repick = true), child: const Text('Pick a folder')),
+                  ),
+                ]),
+              ]),
+            ),
+          ),
+          const SizedBox(height: 4),
+          TextButton(onPressed: () => _send('unsorted'), child: const Text('Leave it in Unsorted')),
+        ];
+      case _Stage.repick:
+        children = [
+          Text('Pick a folder', style: theme.textTheme.titleLarge),
+          gap,
+          _picker(selected: _item.folderId),
+          const SizedBox(height: 8),
+          TextButton(onPressed: () => setState(() => _repick = false), child: const Text('Cancel')),
+        ];
     }
 
     return SingleChildScrollView(
       // Bottom inset: with many folders the picker has a "Find a folder" box,
       // and the keyboard it opens must not cover it.
       padding: EdgeInsets.fromLTRB(20, 0, 20, 16 + MediaQuery.viewInsetsOf(context).bottom),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(heading, style: theme.textTheme.titleLarge),
-          const SizedBox(height: 4),
-          Text(
-            subheading,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-          ),
-          const SizedBox(height: 16),
-          if (widget.justSaved) ...[_savedStatus(theme), const SizedBox(height: 20)],
-          FolderPicker(
-            item: _item,
-            folders: _folders,
-            foldersError: _foldersError,
-            onRetryFolders: _loadFolders,
-            aiWorking: _aiWorking && !_aiTimedOut,
-            onPickAi: () => _choose(ai: true),
-            onPickFolder: _pickFolder,
-            onCreate: _createFolder,
-          ),
-          if (_choiceError != null) ...[
-            const SizedBox(height: 8),
-            Text(_choiceError!, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error)),
-          ],
-          const SizedBox(height: 16),
-          FilledButton(onPressed: () => Navigator.pop(context), child: const Text('Done')),
+      child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        ...children,
+        if (_error != null) ...[
+          const SizedBox(height: 8),
+          Text(_error!, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error)),
         ],
-      ),
+      ]),
     );
   }
 }

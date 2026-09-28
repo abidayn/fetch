@@ -80,19 +80,28 @@ class ItemUpdate(BaseModel):
 
 class ItemFolderChoice(BaseModel):
     """PUT /items/{id}/folder -- one of:
-    {"ai": true}              let the AI pick (applied now, or when enrichment finishes)
-    {"folder_id": "<uuid>"}   the user's own pick
-    {"folder_id": null}       un-file (back to Unfiled)
+    {"ai": true}                  let Fetch pick (applied now, or when enrichment finishes)
+    {"accept_suggestion": true}   create/find the folder the AI proposed and file it there
+    {"folder_id": "<uuid>"}       the user's own pick
+    {"folder_id": null}           leave it in Unsorted (remembered as the user's choice)
     """
 
     ai: bool = False
+    accept_suggestion: bool = False
     folder_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
     def one_choice(self):
-        if self.ai and self.folder_id is not None:
-            raise ValueError("Choose either a folder or AI, not both.")
+        if sum([self.ai, self.accept_suggestion, self.folder_id is not None]) > 1:
+            raise ValueError("Choose one: a folder, Fetch's pick, or Fetch's suggestion.")
         return self
+
+
+class DeleteAccount(BaseModel):
+    """DELETE /auth/me: the password again, so a stolen unlocked phone (or a
+    leaked token) alone can't wipe the account."""
+
+    password: str
 
 
 class ItemPublic(BaseModel):
@@ -101,15 +110,18 @@ class ItemPublic(BaseModel):
     id: uuid.UUID
     url: str
     platform: str | None
+    author: str | None
     title: str | None
     summary: str | None
     category: str | None
+    # Who wrote title/summary: a model id, "user" (edited), or null. Lets the
+    # app label the summary "Written by AI" vs "Edited by you".
+    classified_by: str | None
     processed: bool  # False = enrichment not finished (UI shows "processing")
     has_content: bool  # False = the link's content couldn't be read (see SavedItem.has_content)
     # Folder state (data-model.md, "Folders: who decides"). folder_id NULL =
-    # Unfiled. folder_by "ai" + folder_id NULL = the AI hasn't placed it yet.
-    # folder_suggestion = the AI's proposed name, shown on "Let AI pick"
-    # before the user taps it.
+    # Unsorted. folder_by "ai" + folder_id NULL = waiting (for enrichment, or
+    # for the user to accept folder_suggestion as a new folder).
     folder_id: uuid.UUID | None
     folder_name: str | None
     folder_by: str | None
@@ -134,6 +146,9 @@ class FolderPublic(BaseModel):
     id: uuid.UUID
     name: str
     item_count: int
+    # Newest item in the folder (null = empty). The app orders folders "most
+    # recently used first" by this, or by created_at for empty folders.
+    last_saved_at: datetime | None
     created_at: datetime
 
 

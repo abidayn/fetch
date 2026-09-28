@@ -37,7 +37,7 @@ what would make us revisit it. Schema decisions live in `data-model.md`.
 | **Single uvicorn worker** | Limited free-tier Supavisor connection pool, and `BackgroundTasks` run in-process. Revisit if traffic ever needs more. |
 | **`POST /search`**, not `GET` | A search query is personal data; in a `GET` it would end up in URLs and server/proxy logs. |
 | **404 (not 403)** for other users' items | A 403 would confirm that the item exists. |
-| **Fixed category list** (`classifier.py`) | Free-text categories from the model ("Cooking" vs "Food & Recipes") would split one topic into many labels and break browsing/filtering. Served to the app via `GET /items/categories` so there's one source of truth. |
+| **Fixed category list** (`classifier.py`) | Free-text categories from the model ("Cooking" vs "Food & Recipes") would split one topic into many labels and break browsing/filtering. Served to the app via `GET /items/categories` so there's one source of truth. Since 2026-09-26 the app doesn't show categories (folders replaced them in the UI); the classifier still writes them. |
 | **No state-management library** in Flutter | The only cross-widget need is "refresh home when a share arrives"; a `GlobalKey` covers it. |
 | **Tokens in flutter_secure_storage** | Android Keystore-backed; SharedPreferences is plain XML readable on rooted devices / via adb backup. |
 
@@ -140,7 +140,7 @@ could leave zero results even when matches exist further down. Dates can't be
 | Decision | Why |
 |---|---|
 | **Separate models** from classification (the two chains share no model) | Free-tier quota is per model, and the classifier model only gets 20 requests/day (+5/min). Sharing one would let answers starve new-item classification. |
-| **Top 5 items as context** | More tokens = slower and costlier, and marginally relevant items tempt the model into forced connections. |
+| **Top 3 items as context** (5 until 2026-09-26) | More tokens = slower and costlier, and marginally relevant items tempt the model into forced connections. Cut to 3 with the redesign: answers were taking 12–37 s, and the app tells the user it "reads your top 3". |
 | **No retrieval results → Gemini isn't called** | With empty context the model answers from general knowledge — exactly the hallucination RAG is meant to prevent. |
 | **Grounding + `[n]` citations**, invalid numbers stripped | The UI highlights sources by number; a fake number misleads more than none. |
 | **Prompt-injection defence** | Item text is written by strangers (scraped pages). It's wrapped in `<item>` tags and declared as data; the answer is display-only text that never triggers actions. Tested with a planted "IGNORE ALL PREVIOUS INSTRUCTIONS" item: the model answered normally. This reduces, not eliminates, the risk. |
@@ -171,11 +171,29 @@ engineers' post-mortems; the parts that shaped `backend/llm.py`:
 
 | Decision | Why |
 |---|---|
-| **Folders next to categories**, not replacing them | Categories are the AI's fixed taxonomy (good for search filters, never user-defined); folders are the user's own grouping. Home browses by folder; search can filter by either. |
-| **The user decides; the AI only when asked** ("Let AI pick", first in the picker, own colour) | Most people file things their own way. Skipping the choice leaves the item Unfiled rather than letting the AI file it silently. |
+| **Folders next to categories**, not replacing them | Categories are the AI's fixed taxonomy, never user-defined; folders are the user's own grouping. Since the redesign only folders are visible in the app. |
+| **The user decides; Fetch when asked** ("Let Fetch pick", first in the picker, own colour) | Most people file things their own way. *Reversed 2026-09-26:* closing the save sheet without choosing now counts as "Let Fetch pick" (see Prototype build below). |
 | **The folder suggestion rides on the classification call** | The classifier model has 20 requests/day. A separate "pick a folder" call would halve how many links can be saved per day. The prompt grows by the folder names only (capped at 50 folders). |
-| **The AI may propose a new folder**, created only when the user taps "Let AI pick" | With no fitting folder (or none at all) the AI would otherwise have nothing to offer. Storing the suggestion as a name (`folder_suggestion`), not a folder, means nothing appears in the folder list that the user didn't ask for. Measured on the first real run: a cooking video matched the existing "Recipes"; a Postgres docs page proposed a new "Databases". |
+| **The AI may propose a new folder**, created only when the user accepts it (until 2026-09-26: when they tapped "Let AI pick") | With no fitting folder (or none at all) the AI would otherwise have nothing to offer. Storing the suggestion as a name (`folder_suggestion`), not a folder, means nothing appears in the folder list that the user didn't ask for. Measured on the first real run: a cooking video matched the existing "Recipes"; a Postgres docs page proposed a new "Databases". |
 | **`folder` is a plain string, matched case-insensitively in code** | Not an `Optional` (Groq's strict mode wants every field required) and not a per-user `Literal` (a name that matches nothing would fail validation and discard a good title and summary). |
 | **Separate `PUT /items/{id}/folder`**, row-locked on both sides | The sheet asks for a folder while enrichment is still running; `PATCH` refuses that (409) because enrichment would overwrite text. A folder choice doesn't clash with text, and `SELECT … FOR UPDATE` in both the endpoint and enrichment's final write means a tap at the moment enrichment finishes can't be lost. |
 | **Once placed, the AI never moves an item** | The upgrade job re-classifies fallback results later; letting it re-file items would make folders shift under the user. It only places items still waiting for the AI. |
 | **Deleting a folder un-files its items** (and clears `folder_by`) | Folders are groupings, the links are the data. Clearing `folder_by` stops the upgrade job from re-creating the folder the user just deleted. |
+
+## Prototype build (2026-09-26)
+
+The app was rebuilt to the redesign prototype's flows (screens, states,
+behaviour). Visual style stayed placeholder Material on purpose: a separate
+design pass owns it.
+
+| Decision | Why |
+|---|---|
+| **Closing the save sheet = "Let Fetch pick"** | A save always ends up filed, or flagged in "Needs you" — never silently lost in Unsorted. "Leave it in Unsorted" is still one tap away and is remembered (`folder_by = 'user'`). |
+| **A new folder name waits for the user** (`apply_ai_folder` only files into existing folders; `accept_suggestion` creates) | The folder list only holds folders the user approved. The upgrade job skips items waiting for the user, or it would re-ask the AI forever. |
+| **"Needs you" is worked out in the app** from `GET /items` | Every signal already exists (`folder_suggestion`, `has_content`, `folder_by`, `classified_by`); a server-side list would be a second copy of the same rules. |
+| **Existing Unsorted items were marked "left in Unsorted"** (migration `d7a3e9c15b20`) | Otherwise all 39 older saves would have flooded "Needs you" on the first launch. They still show under the Unsorted chip. |
+| **`author` became a column**, backfilled from the `Author:` line in `raw_content` | The detail screen shows it. It was always extracted, just only kept inside the stored text; 16 of 39 items had one. |
+| **Delete account asks for the password again; a wrong one is 403, not 401** | A token alone (stolen unlocked phone, leaked token) mustn't be enough to wipe the account. 401 would make the app log the user out. |
+| **Timed progress steps, not real ones** | The backend only knows `processed` yes/no; a status column for a 4–9 s animation isn't worth breaking the "no status column" rule (data-model.md). |
+| **Folders "most recently used" first** (`last_saved_at` on `GET /folders`) | The folders you actually file into stay one tap away with dozens of folders. |
+| **Placeholders for the onboarding recording, screenshots and mascots** | None exist yet; the screens are built so they can be swapped in. |

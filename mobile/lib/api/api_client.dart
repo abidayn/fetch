@@ -143,7 +143,36 @@ class ApiClient {
     await _tokenStorage.save(data['access_token'] as String);
   }
 
-  Future<void> logout() => _tokenStorage.clear();
+  Future<void> logout() {
+    _email = null;
+    return _tokenStorage.clear();
+  }
+
+  String? _email;
+
+  /// The logged-in user's email (settings, the avatar letter). Cached: it
+  /// can't change while logged in.
+  Future<String> myEmail() async {
+    final cached = _email;
+    if (cached != null) return cached;
+    final headers = await _headers();
+    final res = await _send(() => http.get(Uri.parse('$_baseUrl/auth/me'), headers: headers));
+    return _email = (_handle(res) as Map<String, dynamic>)['email'] as String;
+  }
+
+  /// Permanently deletes the account and everything in it. The backend asks
+  /// for the password again (403 if wrong). Not retried: a retry after a
+  /// lost reply would 401 on the now-deleted user and read as a failure.
+  Future<void> deleteAccount(String password) async {
+    final headers = await _headers();
+    final res = await _send(retry: false, () => http.delete(
+          Uri.parse('$_baseUrl/auth/me'),
+          headers: headers,
+          body: jsonEncode({'password': password}),
+        ));
+    _handle(res);
+    await logout();
+  }
 
   Future<bool> hasToken() async => (await _tokenStorage.read()) != null;
 
@@ -153,19 +182,7 @@ class ApiClient {
     return _handle(res) as List<dynamic>;
   }
 
-  List<String>? _categories;
-
-  /// The fixed category list from the backend (classifier.py). Cached: the
-  /// list only changes when the backend is redeployed with new categories.
-  Future<List<String>> listCategories() async {
-    final cached = _categories;
-    if (cached != null) return cached;
-    final headers = await _headers();
-    final res = await _send(() => http.get(Uri.parse('$_baseUrl/items/categories'), headers: headers));
-    return _categories = (_handle(res) as List<dynamic>).cast<String>();
-  }
-
-  /// Just send the url -- title/summary/category are filled in by the backend.
+  /// Just send the url -- title/summary are filled in by the backend.
   Future<Map<String, dynamic>> createItem(String url) async {
     final res = await _send(retry: false, () async => http.post(
       Uri.parse('$_baseUrl/items'),
@@ -179,32 +196,31 @@ class ApiClient {
   /// relevance-filtered by the backend -- an empty list is a valid answer
   /// ("nothing matches"), not an error.
   ///
-  /// [category] / [createdAfter] = the structured part of hybrid search:
+  /// [folderId] / [createdAfter] = the structured part of hybrid search:
   /// filtered in the same SQL as the vector search (backend/routers/search.py).
-  Future<List<dynamic>> search(String query,
-      {int limit = 10, String? category, String? folderId, DateTime? createdAfter}) async {
+  Future<List<dynamic>> search(String query, {int limit = 10, String? folderId, DateTime? createdAfter}) async {
     final res = await _send(() async => http.post(
       Uri.parse('$_baseUrl/search'),
       headers: await _headers(),
-      body: jsonEncode({'query': query, 'limit': limit, ..._filters(category, folderId, createdAfter)}),
+      body: jsonEncode({'query': query, 'limit': limit, ..._filters(folderId, createdAfter)}),
     ));
     return _handle(res) as List<dynamic>;
   }
 
   /// Full RAG: the backend finds relevant items, then Gemini writes an answer.
   /// `answer` can be null (Gemini failed / quota used up) -- `sources` is still there.
-  Future<Map<String, dynamic>> searchAnswer(String query,
-      {String? category, String? folderId, DateTime? createdAfter}) async {
+  Future<Map<String, dynamic>> searchAnswer(String query, {String? folderId, DateTime? createdAfter}) async {
     final res = await _send(() async => http.post(
       Uri.parse('$_baseUrl/search/answer'),
       headers: await _headers(),
-      body: jsonEncode({'query': query, ..._filters(category, folderId, createdAfter)}),
+      body: jsonEncode({'query': query, ..._filters(folderId, createdAfter)}),
     ));
     return _handle(res) as Map<String, dynamic>;
   }
 
-  Map<String, dynamic> _filters(String? category, String? folderId, DateTime? createdAfter) => {
-        'category': ?category,
+  // The backend also takes `category`; the app no longer shows categories
+  // (folders replaced them in the UI), so it never sends one.
+  Map<String, dynamic> _filters(String? folderId, DateTime? createdAfter) => {
         'folder_id': ?folderId,
         if (createdAfter != null) 'created_after': createdAfter.toUtc().toIso8601String(),
       };
@@ -247,15 +263,23 @@ class ApiClient {
     _handle(res);
   }
 
-  /// File an item: [ai] = "Let AI pick"; otherwise [folderId], or null to
-  /// un-file. Works while the item is still processing (unlike updateItem),
-  /// and is safe to retry: repeating it gives the same result.
-  Future<Map<String, dynamic>> setItemFolder(String itemId, {String? folderId, bool ai = false}) async {
+  /// File an item: [ai] = "Let Fetch pick"; [acceptSuggestion] = create the
+  /// folder Fetch proposed and file it there; otherwise [folderId], or null
+  /// to leave it in Unsorted (remembered as a decision). Works while the
+  /// item is still processing (unlike updateItem), and is safe to retry:
+  /// repeating it gives the same result.
+  Future<Map<String, dynamic>> setItemFolder(String itemId,
+      {String? folderId, bool ai = false, bool acceptSuggestion = false}) async {
     final headers = await _headers();
+    final Map<String, dynamic> body = ai
+        ? {'ai': true}
+        : acceptSuggestion
+            ? {'accept_suggestion': true}
+            : {'folder_id': folderId};
     final res = await _send(() => http.put(
           Uri.parse('$_baseUrl/items/$itemId/folder'),
           headers: headers,
-          body: jsonEncode(ai ? {'ai': true} : {'folder_id': folderId}),
+          body: jsonEncode(body),
         ));
     return _handle(res) as Map<String, dynamic>;
   }
@@ -269,8 +293,7 @@ class ApiClient {
   /// Only the fields that are sent get changed. The backend rejects it (409)
   /// while the item is still being processed by the AI, since the AI output
   /// would overwrite the edit.
-  Future<Map<String, dynamic>> updateItem(String id,
-      {String? title, String? summary, String? category}) async {
+  Future<Map<String, dynamic>> updateItem(String id, {String? title, String? summary}) async {
     final headers = await _headers();
     final res = await _send(() => http.patch(
           Uri.parse('$_baseUrl/items/$id'),
@@ -278,7 +301,6 @@ class ApiClient {
           body: jsonEncode({
             'title': ?title,
             'summary': ?summary,
-            'category': ?category,
           }),
         ));
     return _handle(res) as Map<String, dynamic>;

@@ -61,11 +61,11 @@ You're reading the Deadlift article in Chrome and tap **Share → Fetch**.
 | 1 | Android hands the URL to Fetch (even if Fetch wasn't running) | `mobile/lib/main.dart` | §6 |
 | 2 | App sends `POST /items {"url": "…/wiki/Deadlift"}` with your login token | `mobile/lib/api/api_client.dart` | §6 |
 | 3 | Backend checks the token, inserts a row with **only the URL**, replies `201` | `backend/routers/items.py` | §3 |
-| 4 | App shows "Saved — AI is organizing this…" plus the folder picker, and checks back every 3 s. You tap **Let AI pick** (or one of your folders, or nothing) | `mobile/lib/widgets/save_result_sheet.dart` | §6 |
+| 4 | App shows the save sheet ("Where should it go?") and checks back every 3 s. You tap **Let Fetch pick** (or a folder; closing the sheet also means Let Fetch pick) | `mobile/lib/widgets/save_result_sheet.dart` | §6 |
 | 5 | **Background:** the page is fetched and its text extracted | `backend/extraction.py` | §4.1 |
 | 6 | **Background:** the AI (Gemini, or a fallback model) reads the text → title, summary, category, and a folder suggestion | `backend/classifier.py` | §4.2, §9 |
 | 7 | **Background:** Gemini turns title + summary into 768 numbers | `backend/embeddings.py` | §4.3 |
-| 8 | Row is complete; because you asked the AI, the item is filed and the sheet flips to "Saved to Gym" | `backend/enrichment.py`, `backend/folders.py` | §3, §6 |
+| 8 | Row is complete; because you let Fetch pick and a "Gym" folder exists, the item is filed there and the sheet flips to "All set" | `backend/enrichment.py`, `backend/folders.py` | §3, §6 |
 | 9 | Days later you search "lifting heavy weights" → Deadlift, score 0.73 | `backend/routers/search.py` | §5 |
 
 After step 8, this is the real row in the database:
@@ -174,7 +174,7 @@ the AI:
 |---|---|---|---|
 | File | `classifier.py` | `embeddings.py` | `answerer.py` |
 | Model(s) | chain: `gemini-3.6-flash` → `gemini-3.5-flash-lite` → Groq `gpt-oss-120b` | `gemini-embedding-2` only | chain: `gemini-3.5-flash` → `gemini-3.1-flash-lite` → Groq `gpt-oss-20b` |
-| Input | extracted page text | title + summary (or your search query) | your question + top 5 items |
+| Input | extracted page text | title + summary (or your search query) | your question + top 3 items |
 | Output | JSON: title, summary, category | 768 numbers | a short paragraph with `[1]`-style citations |
 | When | once per saved link, background | once per link **and once per search** | only when you tap "Summarise with AI" |
 | User waiting? | no | **yes, during search** | **yes** (budget: 25 s) |
@@ -221,8 +221,8 @@ text. Three techniques make the output reliable enough to store directly:
 2. **A fixed category list.** `category` must be one of 11 values (`Literal[...]`
    in `classifier.py`). A model inventing categories freely would produce
    "Cooking", "Food & Recipes", "Recipes" for the same topic and break
-   browse-by-category. The same list feeds the app's edit dropdown via
-   `GET /items/categories`.
+   browse-by-category. (The app no longer shows categories, since folders took
+   their place in the UI; they stay as a signal the classifier writes.)
 3. **Low temperature (0.2).** Temperature is randomness in word choice; low =
    the same input gives nearly the same labels each time.
 
@@ -237,7 +237,8 @@ folders yet). This piggybacks on a call that happens anyway, so folders cost no
 extra quota. Unlike `category`, `folder` is a plain string, not a fixed list:
 the list differs per user, and a folder name that matches nothing must not
 throw away a good title and summary. It's stored as `folder_suggestion` and
-only becomes a real folder if the user taps "Let AI pick" (§6).
+is applied only if the user lets Fetch pick and it names an existing folder;
+a new name waits for the user to accept it (§6).
 
 ### 4.3 Embeddings: meaning as coordinates
 
@@ -340,7 +341,7 @@ HIIT — whose summary is still Indonesian — first.
 
 ### 5.2 A — Augment (`answerer.py`)
 
-"Summarise with AI" runs the **same** retrieval (top 5, same filters), then
+"Answer from these saves" runs the **same** retrieval (top 3, same filters), then
 builds a prompt:
 
 ```text
@@ -410,23 +411,46 @@ A thin client: no business logic, it calls the API and shows states.
 - **States follow §3.3.** "Processing…" while `processed = false` (the home list
   re-checks every 4 s, up to 10 times); the save sheet distinguishes
   "couldn't read this link" from "AI summary didn't come through" via `has_content`.
-- **Folders (`folder_picker.dart`, `backend/folders.py`).** The save sheet
-  offers **Let AI pick** first (in its own colour), then the user's folders,
-  then **+ New folder**; choosing is optional and skipping leaves the item
-  Unfiled. The choice goes to `PUT /items/{id}/folder`, which, unlike editing,
-  works while enrichment is still running. Tapped before the AI finished → the
-  backend remembers "AI decides" (`folder_by = 'ai'`) and enrichment files the
-  item when it lands; tapped after → the stored suggestion is applied at once
-  (matched to an existing folder ignoring case, or created). Both paths lock
-  the item's row first, so a tap at the exact moment enrichment finishes
-  isn't lost. A folder the user picked is never touched by the AI, and one the
-  AI placed is never moved by a later re-classification. Home browses by
-  folder (All · Unfiled · folders); items saved earlier can be filed with
-  ⋮ → Move to folder. **Finding a folder** is matched in the app, not the
-  backend: all folder names (max 50) are already loaded, so it's instant and
-  free. The search screen shows matching folders as you type (tap → home opens
-  that folder), and with more than 6 folders the picker gets a "Find a folder"
-  box; when nothing matches, "+" becomes *Create "what you typed"*.
+- **The save sheet (`save_result_sheet.dart`) is a small state machine.**
+  *Pick* ("Where should it go?": **Let Fetch pick** first in its own colour,
+  folders most recently used first, **+ New folder**) → *Organizing* (Saved →
+  Reading → Writing → Picking a folder; the steps are timed, since the backend
+  only reports `processed`) → *All set* (the result, where it went, who picked
+  it, Change). Two detours: *couldn't read it* (pick a folder or "Leave it in
+  Unsorted") and *suggest* ("None of your folders fit. Create 'X'?"). Closing
+  the sheet without choosing counts as **Let Fetch pick**, so a save always
+  ends up filed or flagged. From a share, the footer offers "Back to TikTok"
+  (`MainActivity.kt` moves Fetch to the back) and "Open in Fetch".
+- **Folders (`backend/folders.py`).** The choice goes to
+  `PUT /items/{id}/folder`, which, unlike editing, works while enrichment is
+  still running. "Let Fetch pick" before the AI finished → the backend
+  remembers it (`folder_by = 'ai'`) and enrichment files the item when it
+  lands; after → the stored suggestion is applied at once. Either way only
+  into an **existing** folder (matched ignoring case): a new name waits on the
+  item until the user accepts it (`accept_suggestion`). Both paths lock the
+  item's row first, so a tap at the moment enrichment finishes isn't lost. The
+  AI never touches a folder the user picked, never moves one it placed, and
+  "Leave it in Unsorted" is remembered as a decision (`folder_by = 'user'`).
+- **"Needs you" (`logic/library.dart`).** Worked out in the app from
+  `GET /items`: a folder suggestion waiting for you, a link only readable as a
+  URL (until you add a title), or a save nobody decided a folder for. Each has
+  a one-tap fix. Home shows a banner when the list isn't empty.
+- **Library (`home_screen.dart`).** Search bar on top ("Search in X" inside a
+  folder, and search stays in that folder), chips All · Unsorted · the 4 most
+  recently used folders · All folders, the Needs-you banner, "From a while
+  ago" (3 old saves, picked per day), then rows: tap opens the original post;
+  ⋮ or long-press opens the item menu (Open, Details, Move, Edit, Share,
+  Delete). Item detail, All folders and Settings are their own screens.
+- **Finding a folder** is matched in the app, not the backend: all folder
+  names (max 50) are already loaded, so it's instant and free. Search shows
+  matching folders as you type (tap → home opens that folder); with more than
+  6 folders the picker gets a "Find a folder" box, and when nothing matches,
+  "+" offers to create what you typed.
+- **Account.** First launch shows onboarding, then one sign-up/log-in screen,
+  then starter folders. A link shared while logged out is kept and saved right
+  after login. Settings holds the theme (System/Light/Dark), the privacy note
+  and **Delete account**, which asks for the password again
+  (`DELETE /auth/me`; everything goes with the user via `ON DELETE CASCADE`).
 - **Login token** is a JWT (a signed "this is user X, valid 7 days" string),
   stored in the phone's encrypted storage and sent with every request.
 
@@ -563,7 +587,10 @@ primary model didn't write — using the primary only, from the stored
 | The shared Gemini client (used directly by embeddings) | `backend/gemini.py` |
 | What happens after a save, the upgrade job | `backend/enrichment.py`, `backend/routers/items.py` |
 | Folders: who decides, AI suggestion → real folder, limits | `backend/folders.py`, `backend/routers/folders.py`, `PUT /items/{id}/folder` in `backend/routers/items.py` (tests: `backend/tests/test_folders.py`) |
-| The folder picker on the save sheet | `mobile/lib/widgets/folder_picker.dart`, `mobile/lib/widgets/save_result_sheet.dart` |
+| The save sheet's stages, the folder picker | `mobile/lib/widgets/save_result_sheet.dart`, `mobile/lib/widgets/folder_picker.dart` (tests: `mobile/test/save_sheet_test.dart`) |
+| "Needs you", chips order, "From a while ago", citations | `mobile/lib/logic/library.dart` (tests: `mobile/test/library_logic_test.dart`) |
+| The item menu, detail, move / edit / share / delete | `mobile/lib/widgets/item_actions.dart`, `mobile/lib/screens/item_detail_screen.dart` |
+| Onboarding, sign-up/log-in, starter folders, settings | `mobile/lib/screens/` (`onboarding_`, `auth_`, `starter_folders_`, `settings_screen.dart`); routing between them in `mobile/lib/main.dart` |
 | Database columns | `docs/data-model.md` first, then `backend/models.py`, then a migration |
 | Recovering failed items | `backend/backfill_enrichment.py`, `backend/backfill_embeddings.py` |
 | App screens | `mobile/lib/screens/`, `mobile/lib/widgets/` |

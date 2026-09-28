@@ -99,41 +99,77 @@ def _item(**kw):
 
 
 @pytest.fixture
-def created(monkeypatch):
-    """Replace get_or_create with a fake that records the names asked for."""
-    calls = []
+def db_fake(monkeypatch):
+    """Fake the two database helpers: `existing` = the user's folder names;
+    `created` records the names get_or_create was asked to create."""
+    state = SimpleNamespace(existing=["Recipes"], created=[])
 
-    def fake(db, user_id, name):
-        calls.append(name)
+    def find(db, user_id, name):
+        for n in state.existing:
+            if n.lower() == name.lower():
+                return SimpleNamespace(id=uuid.uuid4(), name=n)
+        return None
+
+    def get_or_create(db, user_id, name):
+        found = find(db, user_id, name)
+        if found:
+            return found
+        state.created.append(name)
         return SimpleNamespace(id=uuid.uuid4(), name=name)
 
-    monkeypatch.setattr(folders, "get_or_create", fake)
-    return calls
+    monkeypatch.setattr(folders, "find_by_name", find)
+    monkeypatch.setattr(folders, "get_or_create", get_or_create)
+    return state
 
 
-def test_ai_folder_is_applied_when_waiting_for_the_ai(created):
-    item = _item()
+def test_ai_folder_files_into_an_existing_folder(db_fake):
+    item = _item(folder_suggestion="recipes")  # matched ignoring case
     folders.apply_ai_folder(None, item)
-    assert created == ["Recipes"]
     assert item.folder_id is not None and item.folder.name == "Recipes"
+    assert db_fake.created == []
+
+
+def test_a_new_folder_name_waits_for_the_user(db_fake):
+    item = _item(folder_suggestion="Gift ideas")
+    folders.apply_ai_folder(None, item)
+    assert item.folder_id is None and item.folder_by == "ai"  # waiting, nothing created
+    assert db_fake.created == []
 
 
 @pytest.mark.parametrize("kw", [
-    {"folder_by": "user"},                 # the user's own choice: never touched
-    {"folder_by": None},                   # nobody asked: stays Unfiled
+    {"folder_by": "user"},                 # the user's own choice (or Unsorted on purpose)
+    {"folder_by": None},                   # nobody decided: stays Unsorted
     {"folder_id": uuid.uuid4()},           # already placed: never moved
     {"folder_suggestion": None},           # nothing to apply yet
 ])
-def test_ai_folder_is_not_applied(created, kw):
+def test_ai_folder_is_not_applied(db_fake, kw):
     item = _item(**kw)
     before = item.folder_id
     folders.apply_ai_folder(None, item)
-    assert created == []
     assert item.folder_id == before
 
 
-def test_ai_folder_left_unplaced_at_the_folder_limit(monkeypatch):
+def test_accepting_a_suggestion_creates_the_folder(db_fake):
+    item = _item(folder_by=None, folder_suggestion="Gift ideas")
+    folder = folders.accept_suggestion(None, item)
+    assert db_fake.created == ["Gift ideas"]
+    assert item.folder_id == folder.id and item.folder_by == "ai"
+
+
+def test_accepting_without_a_suggestion_does_nothing(db_fake):
+    item = _item(folder_suggestion=None)
+    assert folders.accept_suggestion(None, item) is None
+    assert item.folder_id is None
+
+
+def test_accepting_at_the_folder_limit_leaves_it_waiting(monkeypatch):
     monkeypatch.setattr(folders, "get_or_create", lambda db, user_id, name: None)
-    item = _item()
-    folders.apply_ai_folder(None, item)
-    assert item.folder_id is None and item.folder_by == "ai"
+    item = _item(folder_suggestion="Gift ideas")
+    assert folders.accept_suggestion(None, item) is None
+    assert item.folder_id is None
+
+
+def test_folder_choice_accepts_exactly_one_option():
+    assert ItemFolderChoice.model_validate({"accept_suggestion": True}).accept_suggestion
+    with pytest.raises(ValidationError):
+        ItemFolderChoice.model_validate({"ai": True, "accept_suggestion": True})

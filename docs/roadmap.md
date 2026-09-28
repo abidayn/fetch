@@ -29,6 +29,19 @@ These were planned during deployment but never confirmed:
       (video *and* photo post), Instagram, and a web page; cold-start share;
       search; "Summarise with AI"; open an item in its source app.
 
+## Next: the redesign
+
+The app now has the prototype's screens and flows in placeholder Material
+styling. Still open:
+
+- [ ] **Visual design pass** per screen (separate design session).
+- [ ] **Onboarding recording + the three "Save from any app" screenshots**
+      (placeholders in `onboarding_screen.dart`), and the **mascot** drawings
+      (placeholders in the library's empty/error states).
+- [ ] **Deploy the backend and ship the new APK close together**: after the
+      backend deploy, the old APK's "Let AI pick" no longer creates new
+      folders (the suggestion waits, and only the new app can accept it).
+
 ## Next: app quality
 
 - [ ] **App name and ID.** The launcher shows the app as `mobile`

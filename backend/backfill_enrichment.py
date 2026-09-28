@@ -77,6 +77,7 @@ def reprocess(ids: list[uuid.UUID]):
             item.raw_content = item.title = item.summary = item.category = None
             item.classified_by = None
             item.folder_suggestion = None
+            item.author = None
             item.embedding = None
             db.commit()
         print(f"[{i}/{len(ids)}] {item_id}")

@@ -148,7 +148,8 @@ def set_item_folder(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """File an item: the user's own folder, "let the AI pick", or Unfiled.
+    """File an item: the user's own folder, "let Fetch pick", accept Fetch's
+    proposed new folder, or leave it in Unsorted.
 
     A separate endpoint from PATCH because it must work WHILE the item is
     still being enriched (the save sheet asks right after saving) -- PATCH
@@ -166,15 +167,24 @@ def set_item_folder(
         item.folder = None
         item.folder_id = None
         if item.processed:
-            # Already classified: use the stored suggestion right away (no AI call).
+            # Already classified: use the stored suggestion right away (no AI
+            # call) -- if it names an existing folder; a new name waits for
+            # the user (folders.apply_ai_folder).
             folders.apply_ai_folder(db, item)
             if item.folder_suggestion is None and item.has_content:
                 # Saved before folders existed, or classification failed:
-                # ask the AI now. The app keeps polling until the item is placed.
+                # ask the AI now. The app keeps polling until it answers.
                 background_tasks.add_task(suggest_folder, item.id)
         # Not processed yet: enrichment applies it when it finishes.
+    elif payload.accept_suggestion:
+        if folders.accept_suggestion(db, item) is None:
+            if not item.folder_suggestion:
+                raise HTTPException(status.HTTP_409_CONFLICT, "Fetch hasn't suggested a folder for this item.")
+            raise HTTPException(status.HTTP_409_CONFLICT, f"You can have up to {folders.MAX_FOLDERS} folders.")
     elif payload.folder_id is None:
-        item.folder_by = None
+        # "Leave it in Unsorted": a decision (folder_by 'user'), not "nobody
+        # decided" (NULL) -- so the app doesn't list it under "Needs you".
+        item.folder_by = "user"
         item.folder = None
         item.folder_id = None
     else:

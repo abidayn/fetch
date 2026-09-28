@@ -30,26 +30,32 @@ def _get_own_folder(db: Session, folder_id: uuid.UUID, user: User) -> Folder:
     return folder
 
 
-def _public(folder: Folder, item_count: int) -> FolderPublic:
-    return FolderPublic(id=folder.id, name=folder.name, item_count=item_count, created_at=folder.created_at)
+def _public(folder: Folder, item_count: int, last_saved_at=None) -> FolderPublic:
+    return FolderPublic(
+        id=folder.id, name=folder.name, item_count=item_count,
+        last_saved_at=last_saved_at, created_at=folder.created_at,
+    )
 
 
-def _count_items(db: Session, folder_id: uuid.UUID) -> int:
-    return db.scalar(select(func.count()).select_from(SavedItem).where(SavedItem.folder_id == folder_id))
+def _stats(db: Session, folder_id: uuid.UUID):
+    """(item count, newest item's created_at) for one folder."""
+    return db.execute(
+        select(func.count(SavedItem.id), func.max(SavedItem.created_at)).where(SavedItem.folder_id == folder_id)
+    ).one()
 
 
 @router.get("", response_model=list[FolderPublic])
 def list_folders(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Every folder with its item count, including empty ones: a folder the
-    user just made should show up even before anything is in it."""
+    """Every folder with its item count and newest save, including empty
+    ones: a folder the user just made should show up before anything is in it."""
     rows = db.execute(
-        select(Folder, func.count(SavedItem.id))
+        select(Folder, func.count(SavedItem.id), func.max(SavedItem.created_at))
         .outerjoin(SavedItem, SavedItem.folder_id == Folder.id)
         .where(Folder.user_id == current_user.id)
         .group_by(Folder.id)
         .order_by(func.lower(Folder.name))
     ).all()
-    return [_public(folder, count) for folder, count in rows]
+    return [_public(folder, count, last) for folder, count, last in rows]
 
 
 @router.post("", response_model=FolderPublic, status_code=status.HTTP_201_CREATED)
@@ -87,7 +93,7 @@ def rename_folder(
     except IntegrityError:
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, DUPLICATE_NAME)
-    return _public(folder, _count_items(db, folder.id))
+    return _public(folder, *_stats(db, folder.id))
 
 
 @router.delete("/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)

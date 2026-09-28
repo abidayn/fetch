@@ -1,4 +1,4 @@
-"""Authentication endpoints: register, log in, and check whose token this is."""
+"""Authentication endpoints: register, log in, check whose token this is, delete the account."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from deps import get_current_user
 from models import User
-from schemas import TokenResponse, UserLogin, UserPublic, UserRegister
+from schemas import DeleteAccount, TokenResponse, UserLogin, UserPublic, UserRegister
 from security import create_access_token, hash_password, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -55,3 +55,20 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
 def me(current_user: User = Depends(get_current_user)):
     """Who owns this token. Used by the mobile app to validate a stored token."""
     return current_user
+
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+def delete_account(
+    payload: DeleteAccount,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Permanently delete the account. Items and folders go with it via
+    ON DELETE CASCADE (data-model.md). The password is required again: the
+    token alone (a stolen unlocked phone, a leaked token) mustn't be enough
+    to wipe everything. 403, not 401: the token is fine, the password isn't,
+    and a 401 would make the app log the user out."""
+    if not verify_password(payload.password, current_user.password_hash):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Incorrect password.")
+    db.delete(db.get(User, current_user.id))
+    db.commit()
